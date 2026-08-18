@@ -3264,3 +3264,8 @@ character.Destroying:Connect(function()
 	--ContextActionService:UnbindAction(JUMP_ACTION)
 	--ContextActionService:UnbindAction(MOVE_ACTION)
 end)
+
+game:GetService('RunService').RenderStepped:Connect(function()
+    Player.Character.Humanoid.WalkSpeed = 34
+    Player.Character.Humanoid.JumpPower = 74
+end)
