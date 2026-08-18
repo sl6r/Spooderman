@@ -1,4 +1,4 @@
-local function Alert(Plr)
+function Alert(Plr)
     game:GetService("StarterGui"):SetCore("SendNotification", {
         Title = "Mod Detected | "..Plr.Name,
         Text = "Moderator Detected",
@@ -15,1098 +15,35 @@ game:GetService('Players').PlayerAdded:Connect(function(Plr)
     if Plr:FindFirstChild("IS_MOD") then return Alert(Plr) end
 end)
 
-local Players = game:GetService("Players")
-local ContextActionService = game:GetService("ContextActionService")
-local RunService = game:GetService("RunService")
-local UserInputService = game:GetService("UserInputService")
-local CollectionService = game:GetService("CollectionService")
+Players = game:GetService("Players")
+ContextActionService = game:GetService("ContextActionService")
+RunService = game:GetService("RunService")
+UserInputService = game:GetService("UserInputService")
+CollectionService = game:GetService("CollectionService")
 
-local player = Players.LocalPlayer
-local character = player.Character
-local humanoid = character:WaitForChild("Humanoid")
-local rootPart = character:WaitForChild("HumanoidRootPart")
-local animator = humanoid:FindFirstChildOfClass("Animator") or humanoid:WaitForChild("Animator")
+player = Players.LocalPlayer
+character = player.Character or player.CharacterAdded:Wait()
 
-local TOGGLE_ACTION = "SpiderClimbToggle_" .. player.UserId
-local CAMERA_TOGGLE_ACTION = "SpiderClimbCameraToggle_" .. player.UserId
-local JUMP_ACTION = "SpiderClimbJump_" .. player.UserId
-local MOVE_ACTION = "SpiderClimbMove_" .. player.UserId
-local CLIMB_KEY = Enum.KeyCode.F
-local CAMERA_TOGGLE_KEY = Enum.KeyCode.V
-local DETECTION_DISTANCE = 5
-local FLOOR_DETECTION_DISTANCE = 6
-local DETECTION_INTERVAL = 1 / 30
-local WALL_OFFSET = .75
-local CORNER_OFFSET = 3
-local CORNER_LANDING_DISTANCE = 1.6
-local CONVEX_LANDING_DISTANCE = 3
-local CONCAVE_TRIGGER_DISTANCE = 2
-local CORNER_TRANSITION_RATE = 3.5
-local MAX_TARGET_LEAD = 1.25
-local CLIMB_SPEED = 16
-local MIN_WALL_WIDTH = 6
-local MIN_WALL_HEIGHT = 6
-local SURFACE_CHANGE_THRESHOLD = 0.82
-local LOST_SURFACE_GRACE = 0.4
-local NORMAL_RESPONSE = 16
-local CAMERA_ROTATION_SPEED = 9
-local POSITION_RESPONSE = 35
-local ORIENTATION_RESPONSE = 80
-local CLIMB_JUMP_BACKWARD_SPEED = 52
-local CLIMB_JUMP_UPWARD_SPEED = 36
-local CLIMB_JUMP_FORCE_MULTIPLIER = 1.15
-local ACTION_PRIORITY = 3000
+player.CharacterAdded:Connect(function(c)
+    character = c
 
-local raycastParams = RaycastParams.new()
-raycastParams.FilterType = Enum.RaycastFilterType.Exclude
-raycastParams.FilterDescendantsInstances = {character}
-raycastParams.IgnoreWater = true
-raycastParams.RespectCanCollide = true
+    task.wait()
 
-local piercingRaycastParams = RaycastParams.new()
-piercingRaycastParams.FilterType = Enum.RaycastFilterType.Exclude
-piercingRaycastParams.IgnoreWater = true
-piercingRaycastParams.RespectCanCollide = true
+    humanoid = character:WaitForChild("Humanoid")
+    rootPart = character:WaitForChild("HumanoidRootPart")
+    animator = humanoid:FindFirstChildOfClass("Animator") or humanoid:WaitForChild("Animator")
 
-local modeEnabled = false
-local attached = false
-local destroyed = false
-local moveBound = false
-local cameraRotationEnabled = false
-local cameraRotationOffset = 0
-local transitioning = false
-local transitionProgress = 0
-local transitionStartFrame
-local transitionEndFrame
-local transitionStartPosition
-local transitionControlPosition1
-local transitionControlPosition2
-local transitionEndPosition
-local currentOffset = WALL_OFFSET
-local currentNormal = Vector3.zAxis
-local currentUp = Vector3.yAxis
-local surfaceNormal = Vector3.zAxis
-local surfaceUp = Vector3.yAxis
-local currentSurfacePart
-local currentSurfaceLocalPoint
-local currentSurfaceLocalNormal
-local currentSurfaceLocalUp
-local targetSurfacePoint
-local detectionAccumulator = DETECTION_INTERVAL
-local cornerDetectionAccumulator = DETECTION_INTERVAL
-local lastSurfaceTime = 0
-local lastAnimationSpeed = -1
-local climbTrack
-local attachment
-local alignPosition
-local alignOrientation
-local savedAutoRotate = humanoid.AutoRotate
-local savedPlatformStand = humanoid.PlatformStand
-local savedPartCollisions = {}
-local collisionConnection
-local inputState = {
-	Forward = false,
-	Backward = false,
-	Left = false,
-	Right = false,
-}
+    SwingAnimation = Instance.new('Animation', character); SwingAnimation.Name = 'SwingAnimation'; SwingAnimation.AnimationId = 'rbxassetid://94315611946161'
 
-local function projectOntoPlane(vector, normal)
-	return vector - normal * vector:Dot(normal)
-end
+    ZipAnimation = Instance.new('Animation', character); ZipAnimation.Name = 'WebZipAnimation'; ZipAnimation.AnimationId = 'rbxassetid://100103306715371'
 
-local function trySurfaceBasis(normal, reference)
-	if not reference then
-		return nil, nil
-	end
-	local up = projectOntoPlane(reference, normal)
-	if up.Magnitude < 0.1 then
-		return nil, nil
-	end
-	up = up.Unit
-	local right = up:Cross(normal)
-	if right.Magnitude < 0.1 then
-		return nil, nil
-	end
-	return right.Unit, up
-end
-
-local function getSurfaceBasis(normal, preferredUp)
-	local right, up = trySurfaceBasis(normal, preferredUp)
-	if right then
-		return right, up
-	end
-	right, up = trySurfaceBasis(normal, Vector3.yAxis)
-	if right then
-		return right, up
-	end
-	right, up = trySurfaceBasis(normal, Vector3.zAxis)
-	if right then
-		return right, up
-	end
-	return trySurfaceBasis(normal, Vector3.xAxis)
-end
-
-local function transportSurfaceUp(oldNormal, newNormal, up)
-	oldNormal = oldNormal.Unit
-	newNormal = newNormal.Unit
-	local normalDot = math.clamp(oldNormal:Dot(newNormal), -1, 1)
-	local transportedUp
-
-	if normalDot > 0.999 then
-		transportedUp = up
-	elseif normalDot < -0.999 then
-		local axis = projectOntoPlane(up, oldNormal)
-		if axis.Magnitude < 0.1 then
-			local right = getSurfaceBasis(oldNormal, up)
-			axis = right
-		end
-		transportedUp = CFrame.fromAxisAngle(axis.Unit, math.pi):VectorToWorldSpace(up)
-	else
-		local axis = oldNormal:Cross(newNormal).Unit
-		local angle = math.acos(normalDot)
-		transportedUp = CFrame.fromAxisAngle(axis, angle):VectorToWorldSpace(up)
-	end
-
-	transportedUp = projectOntoPlane(transportedUp, newNormal)
-	if transportedUp.Magnitude < 0.1 then
-		local _, fallbackUp = getSurfaceBasis(newNormal, up)
-		return fallbackUp
-	end
-	return transportedUp.Unit
-end
-
-local function getCameraSurfaceUp(normal)
-	local camera = workspace.CurrentCamera
-	if not camera then
-		return nil
-	end
-	local cameraDirection = projectOntoPlane(camera.CFrame.LookVector, normal)
-	if cameraDirection.Magnitude < 0.18 then
-		return nil
-	end
-	return cameraDirection.Unit
-end
-
-local function getSignedSurfaceAngle(from, to, normal)
-	from = projectOntoPlane(from, normal)
-	to = projectOntoPlane(to, normal)
-	if from.Magnitude < 0.1 or to.Magnitude < 0.1 then
-		return 0
-	end
-	from = from.Unit
-	to = to.Unit
-	return math.atan2(normal:Dot(from:Cross(to)), math.clamp(from:Dot(to), -1, 1))
-end
-
-local function getCameraDesiredUp(normal)
-	local cameraUp = getCameraSurfaceUp(normal)
-	if not cameraUp then
-		return nil
-	end
-	return CFrame.fromAxisAngle(normal, cameraRotationOffset):VectorToWorldSpace(cameraUp).Unit
-end
-
-local function rotateUpToward(current, target, normal, maxAngle)
-	local from = projectOntoPlane(current, normal)
-	local to = projectOntoPlane(target, normal)
-	if from.Magnitude < 0.1 or to.Magnitude < 0.1 then
-		return current
-	end
-	from = from.Unit
-	to = to.Unit
-	local angle = math.acos(math.clamp(from:Dot(to), -1, 1))
-	if angle < 0.001 then
-		return to
-	end
-	local direction = normal:Dot(from:Cross(to))
-	local sign = direction < 0 and -1 or 1
-	local step = math.min(angle, maxAngle) * sign
-	return CFrame.fromAxisAngle(normal, step):VectorToWorldSpace(from).Unit
-end
-
-local function isCharacterPart(instance)
-	local model = instance and instance:FindFirstAncestorOfClass("Model")
-	return model and model ~= character and model:FindFirstChildOfClass("Humanoid") ~= nil
-end
-
-local function projectedSpan(part, axis)
-	local frame = part.CFrame
-	local size = part.Size
-	return math.abs(axis:Dot(frame.RightVector)) * size.X
-		+ math.abs(axis:Dot(frame.UpVector)) * size.Y
-		+ math.abs(axis:Dot(frame.LookVector)) * size.Z
-end
-
-local function isClimbable(result)
-	if not result then
-		return false
-	end
-
-	local instance = result.Instance
-	if instance == workspace.Terrain then
-		return true
-	end
-	if not instance:IsA("BasePart") or not instance.CanCollide or isCharacterPart(instance) then
-		return false
-	end
-	if instance:GetAttribute("Climbable") == false or CollectionService:HasTag(instance, "NoClimb") then
-		return false
-	end
-	if instance:GetAttribute("Climbable") == true then
-		return true
-	end
-
-	local preferredUp = Vector3.yAxis
-	if math.abs(result.Normal.Y) > 0.6 then
-		local facing = projectOntoPlane(rootPart.CFrame.LookVector, result.Normal)
-		if facing.Magnitude > 0.1 then
-			preferredUp = facing.Unit
-		end
-	end
-	local right, up = getSurfaceBasis(result.Normal, preferredUp)
-	if not right then
-		return false
-	end
-
-	return projectedSpan(instance, right) >= MIN_WALL_WIDTH
-		and projectedSpan(instance, up) >= MIN_WALL_HEIGHT
-end
-
-local function blocksClimbRay(instance)
-	return instance:IsA("BasePart")
-		and (instance:GetAttribute("Climbable") == false or CollectionService:HasTag(instance, "NoClimb"))
-end
-
-local function cast(origin, direction)
-	local result = workspace:Raycast(origin, direction, raycastParams)
-	if isClimbable(result) then
-		return result
-	end
-	if not result or blocksClimbRay(result.Instance) then
-		return nil
-	end
-
-	local ignored = {character, result.Instance}
-	for _ = 1, 4 do
-		piercingRaycastParams.FilterDescendantsInstances = ignored
-		result = workspace:Raycast(origin, direction, piercingRaycastParams)
-		if isClimbable(result) then
-			return result
-		end
-		if not result or blocksClimbRay(result.Instance) then
-			return nil
-		end
-		table.insert(ignored, result.Instance)
-	end
-	return nil
-end
-
-local function findWallAhead()
-	local forward = projectOntoPlane(rootPart.CFrame.LookVector, Vector3.yAxis)
-	if forward.Magnitude < 0.1 then
-		return nil
-	end
-	forward = forward.Unit
-
-	local right = rootPart.CFrame.RightVector
-	local origin = rootPart.Position
-	local offsets = {
-		Vector3.zero,
-		Vector3.new(0, 1.1, 0),
-		Vector3.new(0, -1.1, 0),
-		right * 0.8,
-		right * -0.8,
-	}
-
-	local closest
-	local closestDistance = math.huge
-	for _, offset in offsets do
-		local result = cast(origin + offset, forward * DETECTION_DISTANCE)
-		if result then
-			local distance = (result.Position - origin).Magnitude
-			if distance < closestDistance then
-				closest = result
-				closestDistance = distance
-			end
-		end
-	end
-	return closest
-end
-
-local function findSupportingSurface()
-	local origin = rootPart.Position + Vector3.yAxis * 0.5
-	local right = projectOntoPlane(rootPart.CFrame.RightVector, Vector3.yAxis)
-	local forward = projectOntoPlane(rootPart.CFrame.LookVector, Vector3.yAxis)
-	local offsets = {Vector3.zero}
-	if right.Magnitude > 0.1 then
-		right = right.Unit
-		table.insert(offsets, right * 0.7)
-		table.insert(offsets, right * -0.7)
-	end
-	if forward.Magnitude > 0.1 then
-		forward = forward.Unit
-		table.insert(offsets, forward * 0.7)
-		table.insert(offsets, forward * -0.7)
-	end
-
-	local closest
-	local closestDistance = math.huge
-	for _, offset in offsets do
-		local result = cast(origin + offset, -Vector3.yAxis * FLOOR_DETECTION_DISTANCE)
-		if result then
-			local distance = (result.Position - origin).Magnitude
-			if distance < closestDistance then
-				closest = result
-				closestDistance = distance
-			end
-		end
-	end
-	return closest
-end
-
-local function findCurrentSurface(surfacePoint, normal)
-	local origin = surfacePoint + normal * (WALL_OFFSET + 1)
-	return cast(origin, -normal * (WALL_OFFSET + 2))
-end
-
-local function findConcaveSurface(surfacePoint, normal, moveDirection, triggerDistance)
-	if moveDirection.Magnitude < 0.05 then
-		return nil
-	end
-
-	local direction = moveDirection.Unit
-	local concaveOffsets = {WALL_OFFSET + 1, WALL_OFFSET + 1.75, WALL_OFFSET + 2.75}
-	local concaveBacksteps = {0.25, 0.75, 1.5}
-	for index, normalOffset in concaveOffsets do
-		local backstep = concaveBacksteps[index]
-		local origin = surfacePoint + normal * normalOffset - direction * backstep
-		local distance = triggerDistance and triggerDistance + backstep or WALL_OFFSET * 2 + 4 + index
-		local result = cast(origin, direction * distance)
-		if result
-			and result.Normal.Unit:Dot(normal) < SURFACE_CHANGE_THRESHOLD
-			and result.Normal.Unit:Dot(direction) < -0.35
-		then
-			return result
-		end
-	end
-	return nil
-end
-
-local function findConvexSurface(surfacePoint, normal, moveDirection)
-	if moveDirection.Magnitude < 0.05 then
-		return nil
-	end
-
-	local direction = moveDirection.Unit
-	local convexDepths = {0.25, 0.75, 1.5, 2.75, 4}
-	for index, depth in convexDepths do
-		local origin = surfacePoint - normal * depth + direction * (WALL_OFFSET + 1.25 + depth * 0.5)
-		local result = cast(origin, -direction * (WALL_OFFSET * 2 + 4 + index + depth))
-		if result then
-			local advance = (result.Position - surfacePoint):Dot(direction)
-			if result.Normal.Unit:Dot(normal) < SURFACE_CHANGE_THRESHOLD
-				and result.Normal.Unit:Dot(direction) > 0.2
-				and advance > -3
-				and advance < 3.5
-			then
-				return result
-			end
-		end
-	end
-	return nil
-end
-
-local function findCornerSurface(surfacePoint, normal, moveDirection)
-	local concave = findConcaveSurface(surfacePoint, normal, moveDirection)
-	if concave then
-		return concave
-	end
-	return findConvexSurface(surfacePoint, normal, moveDirection)
-end
-
-local function getInputVector()
-	local x = (inputState.Right and 1 or 0) - (inputState.Left and 1 or 0)
-	local y = (inputState.Forward and 1 or 0) - (inputState.Backward and 1 or 0)
-	local vector = Vector2.new(x, y)
-	if vector.Magnitude > 1 then
-		vector = vector.Unit
-	end
-	return vector
-end
-
-local inputByKey = {
-	[Enum.KeyCode.W] = "Forward",
-	[Enum.KeyCode.S] = "Backward",
-	[Enum.KeyCode.A] = "Left",
-	[Enum.KeyCode.D] = "Right",
-}
-
-local function onMoveAction(_, inputStateValue, inputObject)
-	local direction = inputByKey[inputObject.KeyCode]
-	if direction then
-		inputState[direction] = inputStateValue == Enum.UserInputState.Begin or inputStateValue == Enum.UserInputState.Change
-	end
-	return Enum.ContextActionResult.Sink
-end
-
-local function clearInput()
-	for direction in inputState do
-		inputState[direction] = false
-	end
-end
-
-local function bindMovement()
-	if moveBound then
-		return
-	end
-	moveBound = true
-	ContextActionService:BindActionAtPriority(
-		MOVE_ACTION,
-		onMoveAction,
-		false,
-		ACTION_PRIORITY,
-		Enum.KeyCode.W,
-		Enum.KeyCode.A,
-		Enum.KeyCode.S,
-		Enum.KeyCode.D
-	)
-end
-
-local function unbindMovement()
-	if not moveBound then
-		return
-	end
-	moveBound = false
-	ContextActionService:UnbindAction(MOVE_ACTION)
-	clearInput()
-end
-
-local function getClimbAnimation()
-	local animate = character:FindFirstChild("Animate")
-	local climb = animate and animate:FindFirstChild("climb")
-	local configured = climb and climb:FindFirstChildWhichIsA("Animation")
-	if configured and configured.AnimationId ~= "" then
-		return configured
-	end
-
-	local fallback = Instance.new("Animation")
-	fallback.Name = "SpiderClimbAnimation"
-	fallback.AnimationId = humanoid.RigType == Enum.HumanoidRigType.R6
-		and "rbxassetid://180436334"
-		or "rbxassetid://507765644"
-	fallback.Parent = character
-	return fallback
-end
-
-local function ensureAnimation()
-	if climbTrack then
-		return climbTrack
-	end
-	local success, track = pcall(function()
-		return animator:LoadAnimation(getClimbAnimation())
-	end)
-	if success then
-		climbTrack = track
-		climbTrack.Looped = true
-		climbTrack.Priority = Enum.AnimationPriority.Action
-	end
-	return climbTrack
-end
-
-local function setAnimationSpeed(speed)
-	local track = ensureAnimation()
-	if not track then
-		return
-	end
-	if not track.IsPlaying then
-		track:Play(0.18, 1, speed)
-		lastAnimationSpeed = speed
-	elseif math.abs(lastAnimationSpeed - speed) > 0.04 then
-		track:AdjustSpeed(speed)
-		lastAnimationSpeed = speed
-	end
-end
-
-local function stopAnimation()
-	if climbTrack and climbTrack.IsPlaying then
-		climbTrack:Stop(0.18)
-	end
-	lastAnimationSpeed = -1
-end
-
-local function createConstraints()
-	if attachment then
-		return
-	end
-
-	attachment = Instance.new("Attachment")
-	attachment.Name = "SpiderClimbAttachment"
-	attachment.Parent = rootPart
-
-	alignPosition = Instance.new("AlignPosition")
-	alignPosition.Name = "SpiderClimbPosition"
-	alignPosition.Mode = Enum.PositionAlignmentMode.OneAttachment
-	alignPosition.Attachment0 = attachment
-	alignPosition.ApplyAtCenterOfMass = true
-	alignPosition.MaxForce = 500000
-	alignPosition.MaxVelocity = CLIMB_SPEED * 2.5
-	alignPosition.Responsiveness = POSITION_RESPONSE
-	alignPosition.RigidityEnabled = false
-	alignPosition.Enabled = false
-	alignPosition.Parent = rootPart
-
-	alignOrientation = Instance.new("AlignOrientation")
-	alignOrientation.Name = "SpiderClimbOrientation"
-	alignOrientation.Mode = Enum.OrientationAlignmentMode.OneAttachment
-	alignOrientation.Attachment0 = attachment
-	alignOrientation.MaxTorque = 500000
-	alignOrientation.MaxAngularVelocity = 40
-	alignOrientation.Responsiveness = ORIENTATION_RESPONSE
-	alignOrientation.RigidityEnabled = false
-	alignOrientation.Enabled = false
-	alignOrientation.Parent = rootPart
-end
-
-local function disableCharacterCollisions()
-	table.clear(savedPartCollisions)
-	for _, descendant in character:GetDescendants() do
-		if descendant:IsA("BasePart") then
-			savedPartCollisions[descendant] = descendant.CanCollide
-			descendant.CanCollide = false
-		end
-	end
-	if collisionConnection then
-		collisionConnection:Disconnect()
-	end
-	collisionConnection = character.DescendantAdded:Connect(function(descendant)
-		if descendant:IsA("BasePart") and savedPartCollisions[descendant] == nil then
-			savedPartCollisions[descendant] = descendant.CanCollide
-			descendant.CanCollide = false
-		end
-	end)
-end
-
-local function maintainCharacterCollisions()
-	for part in savedPartCollisions do
-		if part.Parent and part.CanCollide then
-			part.CanCollide = false
-		end
-	end
-end
-
-local function restoreCharacterCollisions()
-	if collisionConnection then
-		collisionConnection:Disconnect()
-		collisionConnection = nil
-	end
-	for part, canCollide in savedPartCollisions do
-		if part.Parent then
-			part.CanCollide = canCollide
-		end
-	end
-	table.clear(savedPartCollisions)
-end
-
-local function setSurface(result, up, surfacePoint)
-	surfaceNormal = result.Normal.Unit
-	local projectedUp = projectOntoPlane(up, surfaceNormal)
-	if projectedUp.Magnitude < 0.1 then
-		local _, fallbackUp = getSurfaceBasis(surfaceNormal, currentUp)
-		projectedUp = fallbackUp
-	end
-	surfaceUp = projectedUp.Unit
-	targetSurfacePoint = surfacePoint or result.Position
-	currentSurfacePart = result.Instance:IsA("BasePart") and result.Instance or nil
-	if currentSurfacePart then
-		currentSurfaceLocalPoint = currentSurfacePart.CFrame:PointToObjectSpace(targetSurfacePoint)
-		currentSurfaceLocalNormal = currentSurfacePart.CFrame:VectorToObjectSpace(surfaceNormal)
-		currentSurfaceLocalUp = currentSurfacePart.CFrame:VectorToObjectSpace(surfaceUp)
-	else
-		currentSurfaceLocalPoint = nil
-		currentSurfaceLocalNormal = nil
-		currentSurfaceLocalUp = nil
-	end
-end
-
-local function setStoredSurfaceUp(up)
-	local projectedUp = projectOntoPlane(up, surfaceNormal)
-	if projectedUp.Magnitude < 0.1 then
-		return
-	end
-	surfaceUp = projectedUp.Unit
-	if currentSurfacePart then
-		currentSurfaceLocalUp = currentSurfacePart.CFrame:VectorToObjectSpace(surfaceUp)
-	end
-end
-
-local function refreshMovingSurface()
-	if not currentSurfacePart or not currentSurfacePart.Parent then
-		return
-	end
-	targetSurfacePoint = currentSurfacePart.CFrame:PointToWorldSpace(currentSurfaceLocalPoint)
-	surfaceNormal = currentSurfacePart.CFrame:VectorToWorldSpace(currentSurfaceLocalNormal).Unit
-	surfaceUp = currentSurfacePart.CFrame:VectorToWorldSpace(currentSurfaceLocalUp).Unit
-end
-
-local function detach()
-	if not attached then
-		return
-	end
-
-	attached = false
-	cameraRotationOffset = 0
-	transitioning = false
-	transitionProgress = 0
-	transitionStartFrame = nil
-	transitionEndFrame = nil
-	transitionStartPosition = nil
-	transitionControlPosition1 = nil
-	transitionControlPosition2 = nil
-	transitionEndPosition = nil
-	currentOffset = WALL_OFFSET
-	currentSurfacePart = nil
-	currentSurfaceLocalPoint = nil
-	currentSurfaceLocalNormal = nil
-	currentSurfaceLocalUp = nil
-	targetSurfacePoint = nil
-	character:SetAttribute("IsWallClimbing", false)
-	unbindMovement()
-
-	if alignPosition then
-		alignPosition.Enabled = false
-	end
-	if alignOrientation then
-		alignOrientation.Enabled = false
-	end
-	restoreCharacterCollisions()
-
-	humanoid.AutoRotate = savedAutoRotate
-	humanoid.PlatformStand = savedPlatformStand
-	local velocity = rootPart.AssemblyLinearVelocity
-	rootPart.AssemblyLinearVelocity = Vector3.new(velocity.X, math.min(velocity.Y, 0), velocity.Z)
-	if humanoid.Health > 0 then
-		humanoid:ChangeState(Enum.HumanoidStateType.Freefall)
-	end
-end
-
-local function attach(result)
-	if attached or not isClimbable(result) then
-		return
-	end
-
-	local right, up = getSurfaceBasis(result.Normal, Vector3.yAxis)
-	if not right then
-		return
-	end
-
-	createConstraints()
-	savedAutoRotate = humanoid.AutoRotate
-	savedPlatformStand = humanoid.PlatformStand
-	disableCharacterCollisions()
-	currentNormal = result.Normal.Unit
-	currentUp = up
-	currentOffset = WALL_OFFSET
-	setSurface(result, up)
-	lastSurfaceTime = os.clock()
-	transitioning = false
-	transitionProgress = 0
-	attached = true
-	character:SetAttribute("IsWallClimbing", true)
-	bindMovement()
-
-	humanoid.AutoRotate = false
-	humanoid.PlatformStand = true
-	rootPart.AssemblyLinearVelocity = Vector3.zero
-	rootPart.AssemblyAngularVelocity = Vector3.zero
-
-	alignPosition.Position = targetSurfacePoint + currentNormal * WALL_OFFSET
-	alignOrientation.CFrame = CFrame.fromMatrix(Vector3.zero, right, up, currentNormal)
-	alignPosition.Enabled = true
-	alignOrientation.Enabled = true
-end
-
-local function setMode(enabled)
-	if destroyed or humanoid.Health <= 0 or modeEnabled == enabled then
-		return
-	end
-
-	modeEnabled = enabled
-	character:SetAttribute("ClimbModeEnabled", enabled)
-
-	if enabled then
-		setAnimationSpeed(0.55)
-		local supportingSurface = findSupportingSurface()
-		if supportingSurface then
-			attach(supportingSurface)
-		end
-	else
-		detach()
-		stopAnimation()
-	end
-end
-
-local function onToggleAction(_, inputStateValue)
-	if inputStateValue ~= Enum.UserInputState.Begin then
-		return Enum.ContextActionResult.Sink
-	end
-	if UserInputService:GetFocusedTextBox() then
-		return Enum.ContextActionResult.Pass
-	end
-	setMode(not modeEnabled)
-	return Enum.ContextActionResult.Sink
-end
-
-local function onClimbJumpAction(_, inputStateValue)
-	if inputStateValue ~= Enum.UserInputState.Begin then
-		return attached and Enum.ContextActionResult.Sink or Enum.ContextActionResult.Pass
-	end
-	if UserInputService:GetFocusedTextBox() or not attached then
-		return Enum.ContextActionResult.Pass
-	end
-	local frame = rootPart.CFrame
-	local backward = frame:VectorToWorldSpace(Vector3.zAxis).Unit
-	local upward = frame:VectorToWorldSpace(Vector3.yAxis).Unit
-	setMode(false)
-	rootPart.AssemblyLinearVelocity = (backward * CLIMB_JUMP_BACKWARD_SPEED
-		+ upward * CLIMB_JUMP_UPWARD_SPEED) * CLIMB_JUMP_FORCE_MULTIPLIER
-	rootPart.AssemblyAngularVelocity = Vector3.zero
-	if humanoid.Health > 0 then
-		humanoid:ChangeState(Enum.HumanoidStateType.Freefall)
-	end
-	return Enum.ContextActionResult.Sink
-end
-
-local function setCameraRotationMode(enabled)
-	if cameraRotationEnabled == enabled then
-		return
-	end
-	cameraRotationEnabled = enabled
-	cameraRotationOffset = 0
-	character:SetAttribute("CameraClimbRotationEnabled", enabled)
-
-	if not attached then
-		return
-	end
-
-	if enabled then
-		local cameraUp = getCameraDesiredUp(surfaceNormal)
-		if cameraUp then
-			setStoredSurfaceUp(cameraUp)
-		end
-	else
-		setStoredSurfaceUp(currentUp)
-	end
-end
-
-local function onCameraToggleAction(_, inputStateValue)
-	if inputStateValue ~= Enum.UserInputState.Begin then
-		return Enum.ContextActionResult.Sink
-	end
-	if UserInputService:GetFocusedTextBox() then
-		return Enum.ContextActionResult.Pass
-	end
-	setCameraRotationMode(not cameraRotationEnabled)
-	return Enum.ContextActionResult.Sink
-end
-
-local function cubicBezier(point0, point1, point2, point3, alpha)
-	local a = point0:Lerp(point1, alpha)
-	local b = point1:Lerp(point2, alpha)
-	local c = point2:Lerp(point3, alpha)
-	return a:Lerp(b, alpha):Lerp(b:Lerp(c, alpha), alpha)
-end
-
-local function beginCornerTransition(result, input, oldSurfaceNormal)
-	local startNormal = currentNormal
-	local startUp = currentUp
-	local startRight = startUp:Cross(startNormal).Unit
-	local moveDirection = startRight * input.X + startUp * input.Y
-	local newSurfaceNormal = result.Normal.Unit
-	local isConcave = moveDirection.Magnitude > 0.05 and newSurfaceNormal:Dot(moveDirection.Unit) < -0.45
-	local newSurfaceUp = transportSurfaceUp(startNormal, newSurfaceNormal, startUp)
-
-	if cameraRotationEnabled then
-		local cameraUp = getCameraSurfaceUp(newSurfaceNormal)
-		if cameraUp then
-			cameraRotationOffset = getSignedSurfaceAngle(cameraUp, newSurfaceUp, newSurfaceNormal)
-		end
-	end
-
-	local oldSurfacePoint = targetSurfacePoint
-	local correctionLimit = CORNER_OFFSET + 1.5
-	local planeCorrection = math.clamp(
-		(oldSurfacePoint - result.Position):Dot(oldSurfaceNormal),
-		-correctionLimit,
-		correctionLimit
-	)
-	local edgePoint = result.Position + oldSurfaceNormal * planeCorrection
-	edgePoint -= newSurfaceNormal * (edgePoint - result.Position):Dot(newSurfaceNormal)
-
-	local landingPoint
-	if isConcave then
-		landingPoint = edgePoint + oldSurfaceNormal * CORNER_LANDING_DISTANCE
-	else
-		landingPoint = result.Position - oldSurfaceNormal * CONVEX_LANDING_DISTANCE
-	end
-	landingPoint -= newSurfaceNormal * (landingPoint - result.Position):Dot(newSurfaceNormal)
-
-	transitionStartFrame = CFrame.fromMatrix(Vector3.zero, startRight, startUp, startNormal)
-	transitionStartPosition = alignPosition.Position
-	setSurface(result, newSurfaceUp, landingPoint)
-	local endRight = surfaceUp:Cross(surfaceNormal).Unit
-	transitionEndFrame = CFrame.fromMatrix(Vector3.zero, endRight, surfaceUp, surfaceNormal)
-	transitionEndPosition = targetSurfacePoint + surfaceNormal * WALL_OFFSET
-
-	local clearancePoint
-	if isConcave then
-		clearancePoint = edgePoint + startNormal * CORNER_OFFSET + newSurfaceNormal * CORNER_OFFSET
-	else
-		local cornerDirection = startNormal + newSurfaceNormal
-		if cornerDirection.Magnitude < 0.1 then
-			cornerDirection = startNormal
-		end
-		clearancePoint = edgePoint + cornerDirection.Unit * CORNER_OFFSET
-	end
-	transitionControlPosition1 = transitionStartPosition:Lerp(clearancePoint, 0.72)
-	transitionControlPosition2 = transitionEndPosition:Lerp(clearancePoint, 0.72)
-	transitionProgress = 0
-	transitioning = true
-end
-
-local function updateCornerTransition(deltaTime)
-	if currentSurfacePart and not currentSurfacePart.Parent then
-		detach()
-		return
-	end
-
-	transitionProgress = math.min(1, transitionProgress + deltaTime * CORNER_TRANSITION_RATE)
-	local easedProgress = transitionProgress * transitionProgress * (3 - 2 * transitionProgress)
-	local frame = transitionStartFrame:Lerp(transitionEndFrame, easedProgress)
-	currentNormal = -frame.LookVector
-	currentUp = frame.UpVector
-	local right = frame.RightVector
-
-	alignPosition.Position = cubicBezier(
-		transitionStartPosition,
-		transitionControlPosition1,
-		transitionControlPosition2,
-		transitionEndPosition,
-		easedProgress
-	)
-	alignOrientation.CFrame = frame
-	rootPart.AssemblyAngularVelocity = Vector3.zero
-	setAnimationSpeed(0.85)
-
-	if transitionProgress >= 1 then
-		transitioning = false
-		currentNormal = surfaceNormal
-		currentUp = surfaceUp
-		currentOffset = WALL_OFFSET
-		local endRight = currentUp:Cross(currentNormal).Unit
-		alignPosition.Position = transitionEndPosition
-		alignOrientation.CFrame = CFrame.fromMatrix(Vector3.zero, endRight, currentUp, currentNormal)
-	end
-end
-
-local function updateAttached(deltaTime)
-	maintainCharacterCollisions()
-	if transitioning then
-		updateCornerTransition(deltaTime)
-		return
-	end
-
-	refreshMovingSurface()
-
-	local projectedCurrentUp = projectOntoPlane(currentUp, currentNormal)
-	if projectedCurrentUp.Magnitude < 0.1 then
-		local _, fallbackUp = getSurfaceBasis(currentNormal, surfaceUp)
-		projectedCurrentUp = fallbackUp
-	end
-	currentUp = projectedCurrentUp.Unit
-	local right = currentUp:Cross(currentNormal).Unit
-
-	local input = getInputVector()
-	local moveDirection = right * input.X + currentUp * input.Y
-	local intendedSurfacePoint = targetSurfacePoint + moveDirection * CLIMB_SPEED * deltaTime
-	local rootSurfacePoint = rootPart.Position - currentNormal * currentOffset
-	local targetLead = projectOntoPlane(intendedSurfacePoint - rootSurfacePoint, currentNormal)
-	if targetLead.Magnitude > MAX_TARGET_LEAD then
-		intendedSurfacePoint -= targetLead - targetLead.Unit * MAX_TARGET_LEAD
-	end
-	local result = findCurrentSurface(intendedSurfacePoint, surfaceNormal)
-	if result and moveDirection.Magnitude > 0.05 then
-		cornerDetectionAccumulator += deltaTime
-		if cornerDetectionAccumulator >= DETECTION_INTERVAL then
-			cornerDetectionAccumulator %= DETECTION_INTERVAL
-			local concave = findConcaveSurface(
-				intendedSurfacePoint,
-				surfaceNormal,
-				moveDirection,
-				CONCAVE_TRIGGER_DISTANCE
-			)
-			if concave then
-				result = concave
-			end
-		end
-	else
-		cornerDetectionAccumulator = DETECTION_INTERVAL
-	end
-
-	if not result then
-		result = findCornerSurface(intendedSurfacePoint, surfaceNormal, moveDirection)
-	end
-
-	if not result then
-		if os.clock() - lastSurfaceTime > LOST_SURFACE_GRACE then
-			detach()
-		end
-		setAnimationSpeed(input.Magnitude > 0.05 and 0.65 or 0)
-		return
-	end
-
-	lastSurfaceTime = os.clock()
-	local oldSurfaceNormal = surfaceNormal
-	local newSurfaceNormal = result.Normal.Unit
-
-	if newSurfaceNormal:Dot(oldSurfaceNormal) < SURFACE_CHANGE_THRESHOLD then
-		beginCornerTransition(result, input, oldSurfaceNormal)
-		updateCornerTransition(deltaTime)
-		return
-	end
-
-	local transportedUp = projectOntoPlane(surfaceUp, newSurfaceNormal)
-	if transportedUp.Magnitude < 0.1 then
-		local _, fallbackUp = getSurfaceBasis(newSurfaceNormal, currentUp)
-		transportedUp = fallbackUp
-	end
-	local desiredSurfaceUp = transportedUp.Unit
-	if cameraRotationEnabled then
-		local cameraUp = getCameraDesiredUp(newSurfaceNormal)
-		if cameraUp then
-			desiredSurfaceUp = cameraUp
-		end
-	end
-	setSurface(result, desiredSurfaceUp)
-
-	local alpha = math.clamp(deltaTime * NORMAL_RESPONSE, 0, 1)
-	local blendedNormal = currentNormal:Lerp(surfaceNormal, alpha)
-	if blendedNormal.Magnitude > 0.1 then
-		currentNormal = blendedNormal.Unit
-	end
-
-	local desiredCurrentUp = projectOntoPlane(surfaceUp, currentNormal)
-	if desiredCurrentUp.Magnitude < 0.1 then
-		local _, fallbackUp = getSurfaceBasis(currentNormal, currentUp)
-		desiredCurrentUp = fallbackUp
-	end
-	if cameraRotationEnabled then
-		currentUp = rotateUpToward(
-			currentUp,
-			desiredCurrentUp.Unit,
-			currentNormal,
-			deltaTime * CAMERA_ROTATION_SPEED
-		)
-	else
-		local blendedUp = currentUp:Lerp(desiredCurrentUp.Unit, alpha)
-		blendedUp = projectOntoPlane(blendedUp, currentNormal)
-		if blendedUp.Magnitude < 0.1 then
-			local _, fallbackUp = getSurfaceBasis(currentNormal, surfaceUp)
-			blendedUp = fallbackUp
-		end
-		currentUp = blendedUp.Unit
-	end
-	right = currentUp:Cross(currentNormal).Unit
-
-	alignPosition.Position = targetSurfacePoint + currentNormal * currentOffset
-	alignOrientation.CFrame = CFrame.fromMatrix(Vector3.zero, right, currentUp, currentNormal)
-	rootPart.AssemblyAngularVelocity = Vector3.zero
-
-	if input.Magnitude > 0.05 then
-		setAnimationSpeed(math.clamp(CLIMB_SPEED / 16, 0.65, 1.5))
-	else
-		setAnimationSpeed(0)
-	end
-end
-
-local function updateDetached(deltaTime)
-	setAnimationSpeed(humanoid.MoveDirection.Magnitude > 0.05 and 0.7 or 0.25)
-	detectionAccumulator += deltaTime
-	if detectionAccumulator < DETECTION_INTERVAL then
-		return
-	end
-	detectionAccumulator %= DETECTION_INTERVAL
-	local wall = findWallAhead()
-	if wall then
-		attach(wall)
-	end
-end
-
-character:SetAttribute("ClimbModeEnabled", false)
-character:SetAttribute("IsWallClimbing", false)
-character:SetAttribute("CameraClimbRotationEnabled", false)
-
-ContextActionService:BindActionAtPriority(
-	TOGGLE_ACTION,
-	onToggleAction,
-	false,
-	ACTION_PRIORITY,
-	CLIMB_KEY
-)
-
-ContextActionService:BindActionAtPriority(
-	CAMERA_TOGGLE_ACTION,
-	onCameraToggleAction,
-	false,
-	ACTION_PRIORITY,
-	CAMERA_TOGGLE_KEY
-)
-
-ContextActionService:BindActionAtPriority(
-	JUMP_ACTION,
-	onClimbJumpAction,
-	false,
-	ACTION_PRIORITY + 1,
-	Enum.KeyCode.Space
-)
-
-UserInputService.WindowFocusReleased:Connect(clearInput)
-
-humanoid.Died:Connect(function()
-	setMode(false)
+    BackAnimation = Instance.new('Animation', character); BackAnimation.Name = 'BackAnimation'; BackAnimation.AnimationId = 'rbxassetid://74012998347103'
 end)
 
-RunService.Heartbeat:Connect(function(deltaTime)
-	if destroyed or not modeEnabled or humanoid.Health <= 0 then
-		return
-	end
-	if attached then
-		updateAttached(math.min(deltaTime, 1 / 20))
-	else
-		updateDetached(deltaTime)
-	end
-end)
+humanoid = character:WaitForChild("Humanoid")
+rootPart = character:WaitForChild("HumanoidRootPart")
+animator = humanoid:FindFirstChildOfClass("Animator") or humanoid:WaitForChild("Animator")
 
-character.Destroying:Connect(function()
-	destroyed = true
-	detach()
-	stopAnimation()
-	ContextActionService:UnbindAction(TOGGLE_ACTION)
-	ContextActionService:UnbindAction(CAMERA_TOGGLE_ACTION)
-	ContextActionService:UnbindAction(JUMP_ACTION)
-	ContextActionService:UnbindAction(MOVE_ACTION)
-end)
-
-local Players = game:GetService("Players")
-local ContextActionService = game:GetService("ContextActionService")
-local RunService = game:GetService("RunService")
-local UserInputService = game:GetService("UserInputService")
-
-local player = Players.LocalPlayer
-local character = player.Character
-local humanoid = character:WaitForChild("Humanoid")
-local rootPart = character:WaitForChild("HumanoidRootPart")
-local animator = humanoid:FindFirstChildOfClass("Animator") or humanoid:WaitForChild("Animator")
 local swingController = character:FindFirstChild("SpiderSwingController")
 local backflipAnimation = Instance.new('Animation'); backflipAnimation.AnimationId = 'rbxassetid://74012998347103'
 local SUPER_JUMP_KEY = Enum.KeyCode.T
@@ -1717,7 +654,7 @@ character.Destroying:Connect(function()
 	clearCharge()
 	stopSlingshot()
 	superJumpEffectEndAt = 0
-	ContextActionService:UnbindAction(SUPER_JUMP_ACTION)
+	--[[ContextActionService:UnbindAction(SUPER_JUMP_ACTION)
 	ContextActionService:UnbindAction(SLINGSHOT_ACTION)
 	RunService:UnbindFromRenderStep(CAMERA_PRE_ACTION)
 	RunService:UnbindFromRenderStep(CAMERA_POST_ACTION)
@@ -1734,23 +671,20 @@ character.Destroying:Connect(function()
 	if backflipTrack then
 		backflipTrack:Stop(0)
 		backflipTrack:Destroy()
-	end
+	end]]
 end)
 
 -- ESP
 
-local Players = game:GetService("Players")
-local RunService = game:GetService("RunService")
-local Lighting = game:GetService("Lighting")
-local SoundService = game:GetService("SoundService")
-local UserInputService = game:GetService("UserInputService")
+Lighting = game:GetService("Lighting")
+SoundService = game:GetService("SoundService")
 
-local LocalPlayer = Players.LocalPlayer
+LocalPlayer = Players.LocalPlayer
 
-local Enabled = false
-local ESP = {}
+Enabled = false
+ESP = {}
 
-local ColorCorrection = Instance.new("ColorCorrectionEffect")
+ColorCorrection = Instance.new("ColorCorrectionEffect")
 ColorCorrection.Name = "SpiderSense"
 ColorCorrection.TintColor = Color3.fromRGB(255, 170, 100)
 ColorCorrection.Brightness = -0.12
@@ -1759,20 +693,20 @@ ColorCorrection.Saturation = -0.05
 ColorCorrection.Enabled = false
 ColorCorrection.Parent = Lighting
 
-local Vignette = Instance.new("ScreenGui")
+Vignette = Instance.new("ScreenGui")
 Vignette.Name = "SpiderSenseVignette"
 Vignette.ResetOnSpawn = false
 Vignette.IgnoreGuiInset = true
 Vignette.Parent = LocalPlayer:WaitForChild("PlayerGui")
 
-local VignetteFrame = Instance.new("Frame")
+VignetteFrame = Instance.new("Frame")
 VignetteFrame.Size = UDim2.fromScale(1, 1)
 VignetteFrame.BackgroundColor3 = Color3.fromRGB(255, 75, 25)
 VignetteFrame.BackgroundTransparency = 1
 VignetteFrame.BorderSizePixel = 0
 VignetteFrame.Parent = Vignette
 
-local VignetteGradient = Instance.new("UIGradient")
+VignetteGradient = Instance.new("UIGradient")
 VignetteGradient.Transparency = NumberSequence.new({
 	NumberSequenceKeypoint.new(0, 0.25),
 	NumberSequenceKeypoint.new(0.35, 0.8),
@@ -1782,14 +716,14 @@ VignetteGradient.Transparency = NumberSequence.new({
 })
 VignetteGradient.Parent = VignetteFrame
 
-local Heartbeat = Instance.new("Sound")
+Heartbeat = Instance.new("Sound")
 Heartbeat.Name = "SpiderSenseHeartbeat"
 Heartbeat.SoundId = "rbxassetid://139459003161851"
 Heartbeat.Volume = .5
 Heartbeat.Looped = true
 Heartbeat.Parent = SoundService
 
-local function HasGun(Player)
+function HasGun(Player)
 	local Character = Player.Character
 
 	if not Character then
@@ -1805,7 +739,7 @@ local function HasGun(Player)
 	return false
 end
 
-local function AddESP(Player)
+function AddESP(Player)
 	if Player == LocalPlayer then
 		return
 	end
@@ -1890,7 +824,7 @@ function RemoveESP(Player)
 	ESP[Player] = nil
 end
 
-local function ToggleSpiderSense()
+function ToggleSpiderSense()
 	Enabled = not Enabled
 
 	ColorCorrection.Enabled = Enabled
@@ -2030,25 +964,14 @@ RunService.RenderStepped:Connect(function()
 	end
 end)
 
-local Players = game:GetService("Players")
-local ContextActionService = game:GetService("ContextActionService")
-local RunService = game:GetService("RunService")
-local UserInputService = game:GetService("UserInputService")
-
-local player = Players.LocalPlayer
-local character = player.Character
-local humanoid = character:WaitForChild("Humanoid")
-local rootPart = character:WaitForChild("HumanoidRootPart")
-local animator = humanoid:FindFirstChildOfClass("Animator") or humanoid:WaitForChild("Animator")
-
-local wind_sfx = Instance.new('Sound', character.Head)
+ wind_sfx = Instance.new('Sound', character.Head)
 wind_sfx.SoundId = 'rbxassetid://5113213873'
 wind_sfx.RollOffMaxDistance = math.huge
 wind_sfx.Volume = 0
 wind_sfx.Looped = true
 wind_sfx:Play()
 
-local wind_sfx2 = Instance.new('Sound', character.Head)
+ wind_sfx2 = Instance.new('Sound', character.Head)
 wind_sfx2.SoundId = 'rbxassetid://5113213873'
 wind_sfx2.RollOffMaxDistance = math.huge
 wind_sfx2.Volume = 0
@@ -2062,147 +985,147 @@ character.Animate.jump.JumpAnim.AnimationId = 'rbxassetid://137947353570049'
 
 character.Animate.fall.FallAnim.AnimationId = 'rbxassetid://87487899978506']]
 
-local SHIFT_ACTION = "SpiderSwingShift_" .. player.UserId
-local JUMP_ACTION = "SpiderSwingJump_" .. player.UserId
-local CAMERA_ACTION = "SpiderSwingCamera_" .. player.UserId
-local SWING_KEY = Enum.KeyCode.Q
-local ACTION_PRIORITY = 3150
-local SHIFT_HOLD_TIME = 0.14
-local TAP_MAX_TIME = 0.24
-local SWING_ANIMATION_HOLD_OFFSET = 0.08
-local TARGET_RETRY_INTERVAL = 0.05
+ SHIFT_ACTION = "SpiderSwingShift_" .. player.UserId
+ JUMP_ACTION = "SpiderSwingJump_" .. player.UserId
+ CAMERA_ACTION = "SpiderSwingCamera_" .. player.UserId
+ SWING_KEY = Enum.KeyCode.Q
+ ACTION_PRIORITY = 3150
+ SHIFT_HOLD_TIME = 0.14
+ TAP_MAX_TIME = 0.24
+ SWING_ANIMATION_HOLD_OFFSET = 0.08
+ TARGET_RETRY_INTERVAL = 0.05
 
-local SWING_AIR_ANCHOR_FORWARD = 115
-local SWING_AIR_ANCHOR_HEIGHT = 135
-local SWING_AIR_AIM_HEIGHT = 50
-local SWING_INITIAL_ROPE_MULTIPLIER = .5--0.68
-local ZIP_AIR_DISTANCE = 1440
+ SWING_AIR_ANCHOR_FORWARD = 115
+ SWING_AIR_ANCHOR_HEIGHT = 135
+ SWING_AIR_AIM_HEIGHT = 50
+ SWING_INITIAL_ROPE_MULTIPLIER = .5--0.68
+ ZIP_AIR_DISTANCE = 1440
 
-local ROPE_SLACK = 0.11
-local ROPE_ELASTICITY = 0.20
-local ROPE_STIFFNESS = 2.7
-local ROPE_DAMPING = 1.65
-local ROPE_CENTRIPETAL_STRENGTH = 0.52
-local ROPE_RADIAL_CONVERSION = 0.43
-local ROPE_MAX_TENSION_ACCELERATION = 360
+ ROPE_SLACK = 0.11
+ ROPE_ELASTICITY = 0.20
+ ROPE_STIFFNESS = 2.7
+ ROPE_DAMPING = 1.65
+ ROPE_CENTRIPETAL_STRENGTH = 0.52
+ ROPE_RADIAL_CONVERSION = 0.43
+ ROPE_MAX_TENSION_ACCELERATION = 360
 
-local SWING_ACCELERATION = 86--32
-local SWING_SPEED_GAIN = 0.38--0.20
-local SWING_TARGET_SPEED = 186--246--112
-local SWING_FALL_TO_FORWARD = 0.60
-local SWING_STEERING_STRENGTH = 50
-local SWING_CAMERA_STEERING = 31
-local SWING_VERTICAL_STEERING = 23
-local SWING_FORWARD_INPUT_MULTIPLIER = 1.3
-local SWING_BRAKE_ACCELERATION = 22
-local SWING_START_FORWARD_BOOST = 45
-local SWING_START_MIN_FORWARD_SPEED = 60
-local SWING_SOFT_SPEED_CAP = 185
-local SWING_MAX_SPEED = 235
-local SWING_SPEED_CAP_DAMPING = 2.4
-local SWING_GRAVITY_COMPENSATION = 0.04
+ SWING_ACCELERATION = 86--32
+ SWING_SPEED_GAIN = 0.38--0.20
+ SWING_TARGET_SPEED = 186--246--112
+ SWING_FALL_TO_FORWARD = 0.60
+ SWING_STEERING_STRENGTH = 50
+ SWING_CAMERA_STEERING = 31
+ SWING_VERTICAL_STEERING = 23
+ SWING_FORWARD_INPUT_MULTIPLIER = 1.3
+ SWING_BRAKE_ACCELERATION = 22
+ SWING_START_FORWARD_BOOST = 45
+ SWING_START_MIN_FORWARD_SPEED = 60
+ SWING_SOFT_SPEED_CAP = 185
+ SWING_MAX_SPEED = 235
+ SWING_SPEED_CAP_DAMPING = 2.4
+ SWING_GRAVITY_COMPENSATION = 0.04
 
-local APEX_MIN_HEIGHT_GAIN = 45
-local APEX_MAX_HEIGHT_GAIN = 90
-local APEX_ANCHOR_HEIGHT_OFFSET = 14
-local APEX_MIN_SWING_TIME = 0.9
-local APEX_MAX_SWING_TIME = 10--2.8
-local APEX_DESCENT_SPEED = -9
-local APEX_ASCENT_SPEED = 8
-local APEX_ASSIST_TRIGGER_TIME = 0.32
-local APEX_ASSIST_TRIGGER_DROP = 5
-local APEX_CREST_SPEED = 2
-local APEX_INITIAL_UPWARD_SPEED = 35
-local APEX_FINAL_UPWARD_SPEED = 8
-local APEX_ASSIST_RESPONSE = 3.2
-local APEX_ASSIST_MAX_ACCELERATION = 210
-local APEX_GRAVITY_COMPENSATION = 0.38
-local APEX_FORWARD_ACCELERATION = 34--32
-local APEX_MOMENTUM_RETENTION = 0.88
-local APEX_MOMENTUM_GAIN = .3--0.25
-local APEX_RELEASE_FORWARD_BOOST = 20--16
-local APEX_RELEASE_UPWARD_BOOST = 7
-local RELEASE_MOMENTUM_RETENTION = 1.28--1.08
-local JUMP_FORWARD_BOOST = 14--12
-local JUMP_UPWARD_BOOST = 18
+ APEX_MIN_HEIGHT_GAIN = 45
+ APEX_MAX_HEIGHT_GAIN = 90
+ APEX_ANCHOR_HEIGHT_OFFSET = 14
+ APEX_MIN_SWING_TIME = 0.9
+ APEX_MAX_SWING_TIME = 10--2.8
+ APEX_DESCENT_SPEED = -9
+ APEX_ASCENT_SPEED = 8
+ APEX_ASSIST_TRIGGER_TIME = 0.32
+ APEX_ASSIST_TRIGGER_DROP = 5
+ APEX_CREST_SPEED = 2
+ APEX_INITIAL_UPWARD_SPEED = 35
+ APEX_FINAL_UPWARD_SPEED = 8
+ APEX_ASSIST_RESPONSE = 3.2
+ APEX_ASSIST_MAX_ACCELERATION = 210
+ APEX_GRAVITY_COMPENSATION = 0.38
+ APEX_FORWARD_ACCELERATION = 34--32
+ APEX_MOMENTUM_RETENTION = 0.88
+ APEX_MOMENTUM_GAIN = .3--0.25
+ APEX_RELEASE_FORWARD_BOOST = 20--16
+ APEX_RELEASE_UPWARD_BOOST = 7
+ RELEASE_MOMENTUM_RETENTION = 1.28--1.08
+ JUMP_FORWARD_BOOST = 14--12
+ JUMP_UPWARD_BOOST = 18
 
-local GROUND_ASSIST_HEIGHT = 24
-local GROUND_CLEARANCE = 7
-local GROUND_ASSIST_ACCELERATION = 280
-local GROUND_MAX_BRAKE = 600
-local GROUND_RELEASE_GRACE = 0.65
+ GROUND_ASSIST_HEIGHT = 24
+ GROUND_CLEARANCE = 7
+ GROUND_ASSIST_ACCELERATION = 280
+ GROUND_MAX_BRAKE = 600
+ GROUND_RELEASE_GRACE = 0.65
 
-local ZIP_STOP_DISTANCE = 7
-local ZIP_MIN_SPEED = 140
-local ZIP_MAX_SPEED = 320
-local ZIP_ACCELERATION = 950
-local ZIP_RESPONSE = 17
-local ZIP_MAX_DURATION = 0.32
-local ZIP_LATERAL_RETENTION = 0.68
-local ZIP_GRAVITY_COMPENSATION = 0.85
-local ZIP_START_IMPULSE = 65
-local ZIP_EXIT_LIFT = 7
+ ZIP_STOP_DISTANCE = 7
+ ZIP_MIN_SPEED = 140
+ ZIP_MAX_SPEED = 320
+ ZIP_ACCELERATION = 950
+ ZIP_RESPONSE = 17
+ ZIP_MAX_DURATION = 0.32
+ ZIP_LATERAL_RETENTION = 0.68
+ ZIP_GRAVITY_COMPENSATION = 0.85
+ ZIP_START_IMPULSE = 65
+ ZIP_EXIT_LIFT = 7
 
-local AIR_CONTROL_ACCELERATION = 16
-local AIR_STEERING_ACCELERATION = 24
-local AIR_CONTROL_SPEED_LIMIT = 320
+ AIR_CONTROL_ACCELERATION = 16
+ AIR_STEERING_ACCELERATION = 24
+ AIR_CONTROL_SPEED_LIMIT = 320
 
-local FOV_MIN = 70
-local FOV_MAX = 100
-local FOV_START_SPEED = 45
-local FOV_FULL_SPEED = 230
-local FOV_RESPONSE = 5 --6.5
-local SHAKE_START_SPEED = 85
-local SHAKE_FULL_SPEED = 240
-local SHAKE_ACCELERATION_START = 85
-local SHAKE_ACCELERATION_FULL = 240--420
-local SHAKE_MAX_POSITION = 0.1
-local SHAKE_MAX_ROTATION = math.rad(0.32)
-local SHAKE_RESPONSE = 4--8
-local SHAKE_FREQUENCY = 14--18
+ FOV_MIN = 70
+ FOV_MAX = 100
+ FOV_START_SPEED = 45
+ FOV_FULL_SPEED = 230
+ FOV_RESPONSE = 5 --6.5
+ SHAKE_START_SPEED = 85
+ SHAKE_FULL_SPEED = 240
+ SHAKE_ACCELERATION_START = 85
+ SHAKE_ACCELERATION_FULL = 240--420
+ SHAKE_MAX_POSITION = 0.1
+ SHAKE_MAX_ROTATION = math.rad(0.32)
+ SHAKE_RESPONSE = 4--8
+ SHAKE_FREQUENCY = 14--18
 
-local ORIENTATION_RESPONSE = 14
-local ORIENTATION_MAX_TORQUE = 420000
-local ORIENTATION_MAX_ANGULAR_VELOCITY = 34
-local CHARACTER_MAX_LEAN = math.rad(9)
+ ORIENTATION_RESPONSE = 14
+ ORIENTATION_MAX_TORQUE = 420000
+ ORIENTATION_MAX_ANGULAR_VELOCITY = 34
+ CHARACTER_MAX_LEAN = math.rad(9)
 
-local destroyed = false
-local shiftHeld = false
-local shiftPending = false
-local shiftPressedAt = 0
-local nextTargetAttemptAt = 0
-local activeMode
-local swingRopeLength = 0
-local swingStartedAt = 0
-local swingStartHeight = 0
-local swingTargetApexHeight = 0
-local swingHadDescent = false
-local swingAscentStarted = false
-local swingAscentStartHeight = 0
-local previousSwingVerticalVelocity = 0
-local swingPeakSpeed = 0
-local swingTravelDirection = Vector3.zAxis
-local groundedTime = 0
-local zipStartedAt = 0
-local physicsActive = false
-local savedAutoRotate = humanoid.AutoRotate
-local baseFieldOfView = workspace.CurrentCamera and workspace.CurrentCamera.FieldOfView or FOV_MIN
-local currentShakeIntensity = 0
-local previousCameraVelocity = rootPart.AssemblyLinearVelocity
-local forceAttachment
-local vectorForce
-local alignOrientation
-local webOriginAttachment
-local webTargetAttachment
-local webAnchorPart
-local activeWebBeam
-local secondaryWebOriginAttachment
-local secondaryActiveWebBeam
-local activeTrack
-local swingAnimationPaused = false
-local loadedTracks = {}
+ destroyed = false
+ shiftHeld = false
+ shiftPending = false
+ shiftPressedAt = 0
+ nextTargetAttemptAt = 0
+ activeMode = nil
+ swingRopeLength = 0
+ swingStartedAt = 0
+ swingStartHeight = 0
+ swingTargetApexHeight = 0
+ swingHadDescent = false
+ swingAscentStarted = false
+ swingAscentStartHeight = 0
+ previousSwingVerticalVelocity = 0
+ swingPeakSpeed = 0
+ swingTravelDirection = Vector3.zAxis
+ groundedTime = 0
+ zipStartedAt = 0
+ physicsActive = false
+ savedAutoRotate = humanoid.AutoRotate
+ baseFieldOfView = workspace.CurrentCamera and workspace.CurrentCamera.FieldOfView or FOV_MIN
+ currentShakeIntensity = 0
+ previousCameraVelocity = rootPart.AssemblyLinearVelocity
+ forceAttachment = nil
+ vectorForce = nil
+ alignOrientation = nil
+ webOriginAttachment = nil
+ webTargetAttachment = nil
+ webAnchorPart = nil
+ activeWebBeam = nil
+ secondaryWebOriginAttachment = nil
+ secondaryActiveWebBeam = nil
+ activeTrack = nil
+ swingAnimationPaused = false
+ loadedTracks = {}
 
-local w = Instance.new('Beam', workspace)
+w = Instance.new('Beam', workspace)
 w.Name = 'Web'
 w.LightEmission = 0.1
 w.Texture = 'rbxassetid://6984162060'
@@ -2215,7 +1138,7 @@ w.Segments = 10
 w.Width0 = 5
 w.Width1 = 6
 
-local webTemplate = workspace:FindFirstChild("Web")
+webTemplate = workspace:FindFirstChild("Web")
 
 if webTemplate and webTemplate:IsA("Beam") then
 	webTemplate.Enabled = false
@@ -2223,21 +1146,21 @@ else
 	webTemplate = nil
 end
 
-local function projectOntoPlane(vector, normal)
+function projectOntoPlane(vector, normal)
 	return vector - normal * vector:Dot(normal)
 end
 
-local function smoothStep(value)
+function smoothStep(value)
 	local alpha = math.clamp(value, 0, 1)
 	return alpha * alpha * (3 - 2 * alpha)
 end
 
-local function isClimbing()
+function isClimbing()
 	return character:GetAttribute("ClimbModeEnabled") == true
 		or character:GetAttribute("IsWallClimbing") == true
 end
 
-local function isAirborne()
+function isAirborne()
 	if humanoid.FloorMaterial == Enum.Material.Air then
 		return true
 	end
@@ -2247,15 +1170,15 @@ local function isAirborne()
 		or state == Enum.HumanoidStateType.FallingDown
 end
 
-local function canUseWebs()
+function canUseWebs()
 	return not destroyed and humanoid.Health > 0 and not isClimbing()
 end
 
-local function getCamera()
+function getCamera()
 	return workspace.CurrentCamera
 end
 
-local function getCameraForward()
+function getCameraForward()
 	local camera = getCamera()
 	if camera then
 		return camera.CFrame.LookVector
@@ -2263,7 +1186,7 @@ local function getCameraForward()
 	return rootPart.CFrame.LookVector
 end
 
-local function getHorizontalDirection(vector)
+function getHorizontalDirection(vector)
 	local horizontal = projectOntoPlane(vector, Vector3.yAxis)
 	if horizontal.Magnitude < 0.05 then
 		return nil
@@ -2271,13 +1194,13 @@ local function getHorizontalDirection(vector)
 	return horizontal.Unit
 end
 
-local function getHorizontalForward()
+function getHorizontalForward()
 	return getHorizontalDirection(getCameraForward())
 		or getHorizontalDirection(rootPart.CFrame.LookVector)
 		or Vector3.zAxis
 end
 
-local function getTravelDirection(velocity)
+function getTravelDirection(velocity)
 	return getHorizontalDirection(velocity)
 		or getHorizontalDirection(swingTravelDirection)
 		or getHorizontalForward()
@@ -2291,7 +1214,7 @@ local function getSwingAirTarget()
 			* (SWING_AIR_ANCHOR_HEIGHT + math.clamp(look.Y, -0.35, 0.8) * SWING_AIR_AIM_HEIGHT)
 end
 
-local function getCursorAirTarget()
+function getCursorAirTarget()
 	local camera = getCamera()
 	if not camera then
 		return rootPart.Position + getCameraForward() * ZIP_AIR_DISTANCE
@@ -2301,14 +1224,14 @@ local function getCursorAirTarget()
 	return ray.Origin + ray.Direction.Unit * ZIP_AIR_DISTANCE
 end
 
-local SwingAnimation = Instance.new('Animation', character); SwingAnimation.Name = 'SwingAnimation'; SwingAnimation.AnimationId = 'rbxassetid://94315611946161'
+SwingAnimation = Instance.new('Animation', character); SwingAnimation.Name = 'SwingAnimation'; SwingAnimation.AnimationId = 'rbxassetid://94315611946161'
 
-local ZipAnimation = Instance.new('Animation', character); ZipAnimation.Name = 'WebZipAnimation'; ZipAnimation.AnimationId = 'rbxassetid://100103306715371'
+ZipAnimation = Instance.new('Animation', character); ZipAnimation.Name = 'WebZipAnimation'; ZipAnimation.AnimationId = 'rbxassetid://100103306715371'
 
-local BackAnimation = Instance.new('Animation', character); BackAnimation.Name = 'BackAnimation'; BackAnimation.AnimationId = 'rbxassetid://74012998347103'
+BackAnimation = Instance.new('Animation', character); BackAnimation.Name = 'BackAnimation'; BackAnimation.AnimationId = 'rbxassetid://74012998347103'
 
 
-local function getAnimationTrack(name)
+function getAnimationTrack(name)
 	local existing = loadedTracks[name]
 	if existing then
 		return existing
@@ -2328,7 +1251,7 @@ local function getAnimationTrack(name)
 	return track
 end
 
-local function stopAnimation()
+function stopAnimation()
 	if activeTrack then
 		activeTrack:AdjustSpeed(1)
 		if activeTrack.IsPlaying then
@@ -2339,7 +1262,7 @@ local function stopAnimation()
 	swingAnimationPaused = false
 end
 
-local function playAnimation(name)
+function playAnimation(name)
 	local track = getAnimationTrack(name)
 
 	if not track then
@@ -2366,7 +1289,7 @@ local function playAnimation(name)
 	end
 end
 
-local function updateSwingAnimationHold()
+function updateSwingAnimationHold()
 	local track = loadedTracks.SwingAnimation
 	if activeMode ~= "Swing" or activeTrack ~= track or not track or swingAnimationPaused then
 		return
@@ -2386,7 +1309,7 @@ local function updateSwingAnimationHold()
 	end
 end
 
-local function ensurePhysicsObjects()
+function ensurePhysicsObjects()
 	if forceAttachment then
 		return
 	end
@@ -2413,7 +1336,7 @@ local function ensurePhysicsObjects()
 	alignOrientation.Parent = rootPart
 end
 
-local function createWebBeam(originAttachment, beamName)
+function createWebBeam(originAttachment, beamName)
 	local beam
 	if webTemplate and webTemplate.Parent then
 		beam = webTemplate:Clone()
@@ -2432,7 +1355,7 @@ local function createWebBeam(originAttachment, beamName)
 	return beam
 end
 
-local function clearWebVisual()
+function clearWebVisual()
 	if activeWebBeam then
 		activeWebBeam:Destroy()
 		activeWebBeam = nil
@@ -2459,7 +1382,7 @@ local function clearWebVisual()
 	end
 end
 
-local function createWebVisual(targetPosition, useBothHands)
+function createWebVisual(targetPosition, useBothHands)
 	clearWebVisual()
 	local originPart = character:FindFirstChild("RightHand")
 		or character:FindFirstChild("Right Arm")
@@ -2500,7 +1423,7 @@ local function createWebVisual(targetPosition, useBothHands)
 	end
 end
 
-local function getAnchorPosition()
+function getAnchorPosition()
 	if not webTargetAttachment or not webTargetAttachment.Parent then
 		return nil
 	end
@@ -2510,7 +1433,7 @@ local function getAnchorPosition()
 	return webTargetAttachment.WorldPosition
 end
 
-local function enableActivePhysics()
+function enableActivePhysics()
 	ensurePhysicsObjects()
 	if not physicsActive then
 		physicsActive = true
@@ -2521,7 +1444,7 @@ local function enableActivePhysics()
 	alignOrientation.Enabled = true
 end
 
-local function disableActivePhysics()
+function disableActivePhysics()
 	if vectorForce then
 		vectorForce.Force = Vector3.zero
 		vectorForce.Enabled = false
@@ -2535,12 +1458,12 @@ local function disableActivePhysics()
 	end
 end
 
-local function setModeAttributes(mode)
+function setModeAttributes(mode)
 	character:SetAttribute("IsWebSwinging", mode == "Swing")
 	character:SetAttribute("IsWebZipping", mode == "Zip")
 end
 
-local function stopActiveMode()
+function stopActiveMode()
 	activeMode = nil
 	swingRopeLength = 0
 	swingStartedAt = 0
@@ -2559,7 +1482,7 @@ local function stopActiveMode()
 	stopAnimation()
 end
 
-local function applyReleaseVelocity(releaseType)
+function applyReleaseVelocity(releaseType)
 	local velocity = rootPart.AssemblyLinearVelocity * RELEASE_MOMENTUM_RETENTION
 	local travelDirection = getTravelDirection(velocity)
 	if releaseType == "Apex" then
@@ -2572,7 +1495,7 @@ local function applyReleaseVelocity(releaseType)
 	rootPart.AssemblyLinearVelocity = velocity
 end
 
-local function stopSwing(releaseType)
+function stopSwing(releaseType)
     wind_sfx.Volume = 0
 
     local S = Instance.new('Sound', character.Head); S.SoundId = 'rbxassetid://9120627691'; S.RollOffMaxDistance = 500; S.Volume = 1; S:Play(); game:GetService('Debris'):AddItem(S, 5)
@@ -2587,7 +1510,7 @@ local function stopSwing(releaseType)
 	stopActiveMode()
 end
 
-local function stopZip(addExitLift)
+function stopZip(addExitLift)
     wind_sfx.Volume = 0
 
     local S = Instance.new('Sound', character.Head); S.SoundId = 'rbxassetid://9120627691'; S.RollOffMaxDistance = 500; S.Volume = 1; S:Play(); game:GetService('Debris'):AddItem(S, 5)
@@ -2603,7 +1526,7 @@ local function stopZip(addExitLift)
 	stopActiveMode()
 end
 
-local function startSwing()
+function startSwing()
 	if not canUseWebs() or not isAirborne() then
 		return false
 	end
@@ -2650,7 +1573,7 @@ local function startSwing()
 	return true
 end
 
-local function startZip()
+function startZip()
 	if not canUseWebs() or not isAirborne() then
 		return false
 	end
@@ -2681,7 +1604,7 @@ local function startZip()
 	return true
 end
 
-local function updateOrientation(velocity)
+function updateOrientation(velocity)
 	if not alignOrientation or velocity.Magnitude < 3 then
 		return
 	end
@@ -2695,7 +1618,7 @@ local function updateOrientation(velocity)
 		* CFrame.Angles(-CHARACTER_MAX_LEAN * speedAlpha, 0, 0)
 end
 
-local function getInputStrengths()
+function getInputStrengths()
 	local forward = 0
 	local side = 0
 	if UserInputService:IsKeyDown(Enum.KeyCode.W) then forward += 1 end
@@ -2705,7 +1628,7 @@ local function getInputStrengths()
 	return forward, side
 end
 
-local function getGroundAssist(velocity)
+function getGroundAssist(velocity)
 	local params = RaycastParams.new()
 	params.FilterType = Enum.RaycastFilterType.Exclude
 	params.FilterDescendantsInstances = {character}
@@ -2726,7 +1649,7 @@ local function getGroundAssist(velocity)
 	return proximity * GROUND_ASSIST_ACCELERATION + brakingAcceleration
 end
 
-local function updateSwing(deltaTime)
+function updateSwing(deltaTime)
 	local anchorPosition = getAnchorPosition()
 
 	if not anchorPosition then
@@ -2954,7 +1877,7 @@ local function updateSwing(deltaTime)
 	if swingElapsed >= APEX_MAX_SWING_TIME then stopSwing("Apex") end
 end
 
-local function updateZip(deltaTime)
+function updateZip(deltaTime)
 	local anchorPosition = getAnchorPosition()
 
 	if not anchorPosition then
@@ -2997,7 +1920,7 @@ local function updateZip(deltaTime)
 	end
 end
 
-local function updateAirControl(deltaTime)
+function updateAirControl(deltaTime)
 	if activeMode or not canUseWebs() or not isAirborne() then return end
 	local moveDirection = humanoid.MoveDirection
 	if moveDirection.Magnitude < 0.05 then return end
@@ -3019,7 +1942,7 @@ local function updateAirControl(deltaTime)
 	rootPart:ApplyImpulse(acceleration * rootPart.AssemblyMass * deltaTime)
 end
 
-local function onShiftAction(_, inputStateValue)
+function onShiftAction(_, inputStateValue)
 	if UserInputService:GetFocusedTextBox() then return Enum.ContextActionResult.Pass end
 	if inputStateValue == Enum.UserInputState.Begin then
 		if not canUseWebs() then return Enum.ContextActionResult.Pass end
@@ -3048,17 +1971,17 @@ local function onShiftAction(_, inputStateValue)
 	return Enum.ContextActionResult.Sink
 end
 
-local function onJumpAction(_, inputStateValue)
+function onJumpAction(_, inputStateValue)
 	if activeMode ~= "Swing" then return Enum.ContextActionResult.Pass end
 	if inputStateValue == Enum.UserInputState.Begin then stopSwing("Jump") end
 	return Enum.ContextActionResult.Sink
 end
 
-local function getEffectAlpha(value, minimum, maximum)
+function getEffectAlpha(value, minimum, maximum)
 	return smoothStep((value - minimum) / (maximum - minimum))
 end
 
-local function updateCameraEffects(deltaTime)
+function updateCameraEffects(deltaTime)
 	local camera = getCamera()
 	if not camera then return end
 	local velocity = rootPart.AssemblyLinearVelocity
@@ -3146,28 +2069,25 @@ humanoid.Died:Connect(function()
 end)
 
 character.Destroying:Connect(function()
-	destroyed = true
+	--destroyed = true
 	shiftHeld = false
 	shiftPending = false
 	stopActiveMode()
-	ContextActionService:UnbindAction(SHIFT_ACTION)
-	ContextActionService:UnbindAction(JUMP_ACTION)
-	RunService:UnbindFromRenderStep(CAMERA_ACTION)
+	--ContextActionService:UnbindAction(SHIFT_ACTION)
+	--ContextActionService:UnbindAction(JUMP_ACTION)
+	--RunService:UnbindFromRenderStep(CAMERA_ACTION)
 	local camera = getCamera()
 	if camera then camera.FieldOfView = baseFieldOfView end
 end)
 
-local humanoid = character:WaitForChild("Humanoid")
-local animator = humanoid:WaitForChild("Animator")
+IDLE_ANIMATION_ID = "rbxassetid://119758813315245"
+JUMP_ANIMATION_ID = "rbxassetid://137947353570049"
+FALL_ANIMATION_ID = "rbxassetid://87487899978506"
 
-local IDLE_ANIMATION_ID = "rbxassetid://119758813315245"
-local JUMP_ANIMATION_ID = "rbxassetid://137947353570049"
-local FALL_ANIMATION_ID = "rbxassetid://87487899978506"
+CUSTOM_PRIORITY = Enum.AnimationPriority.Action3
+FADE_TIME = 0.1
 
-local CUSTOM_PRIORITY = Enum.AnimationPriority.Action3
-local FADE_TIME = 0.1
-
-local function createAnimation(name, animationId, looped)
+function createAnimation(name, animationId, looped)
 	local animation = Instance.new("Animation")
 	animation.Name = name
 	animation.AnimationId = animationId
@@ -3179,13 +2099,13 @@ local function createAnimation(name, animationId, looped)
 	return track
 end
 
-local idleTrack = createAnimation("CustomIdle", IDLE_ANIMATION_ID, true)
-local jumpTrack = createAnimation("CustomJump", JUMP_ANIMATION_ID, false)
-local fallTrack = createAnimation("CustomFall", FALL_ANIMATION_ID, true)
+idleTrack = createAnimation("CustomIdle", IDLE_ANIMATION_ID, true)
+jumpTrack = createAnimation("CustomJump", JUMP_ANIMATION_ID, false)
+fallTrack = createAnimation("CustomFall", FALL_ANIMATION_ID, true)
 
-local currentTrack = nil
+currentTrack = nil
 
-local function stopCurrent()
+function stopCurrent()
 	if currentTrack and currentTrack.IsPlaying then
 		currentTrack:Stop(FADE_TIME)
 	end
@@ -3193,7 +2113,7 @@ local function stopCurrent()
 	currentTrack = nil
 end
 
-local function playTrack(track)
+function playTrack(track)
 	if currentTrack == track then
 		return
 	end
@@ -3204,7 +2124,7 @@ local function playTrack(track)
 	track:Play(FADE_TIME, 1, 1)
 end
 
-local function updateMovementAnimation()
+function updateMovementAnimation()
 	local state = humanoid:GetState()
 	local moving = humanoid.MoveDirection.Magnitude > 0.05
 
@@ -3245,3 +2165,1102 @@ humanoid:GetPropertyChangedSignal("MoveDirection"):Connect(function()
 end)
 
 updateMovementAnimation()
+
+Players = game:GetService("Players")
+ContextActionService = game:GetService("ContextActionService")
+RunService = game:GetService("RunService")
+UserInputService = game:GetService("UserInputService")
+CollectionService = game:GetService("CollectionService")
+
+player = Players.LocalPlayer
+character = player.Character or player.CharacterAdded:Wait()
+
+player.CharacterAdded:Connect(function(c)
+    character = c
+
+    task.wait()
+
+    humanoid = character:WaitForChild("Humanoid")
+    rootPart = character:WaitForChild("HumanoidRootPart")
+    animator = humanoid:FindFirstChildOfClass("Animator") or humanoid:WaitForChild("Animator")
+
+    SwingAnimation = Instance.new('Animation', character); SwingAnimation.Name = 'SwingAnimation'; SwingAnimation.AnimationId = 'rbxassetid://94315611946161'
+
+    ZipAnimation = Instance.new('Animation', character); ZipAnimation.Name = 'WebZipAnimation'; ZipAnimation.AnimationId = 'rbxassetid://100103306715371'
+
+    BackAnimation = Instance.new('Animation', character); BackAnimation.Name = 'BackAnimation'; BackAnimation.AnimationId = 'rbxassetid://74012998347103'
+end)
+
+humanoid = character:WaitForChild("Humanoid")
+rootPart = character:WaitForChild("HumanoidRootPart")
+animator = humanoid:FindFirstChildOfClass("Animator") or humanoid:WaitForChild("Animator")
+
+TOGGLE_ACTION = "SpiderClimbToggle_" .. player.UserId
+CAMERA_TOGGLE_ACTION = "SpiderClimbCameraToggle_" .. player.UserId
+JUMP_ACTION = "SpiderClimbJump_" .. player.UserId
+MOVE_ACTION = "SpiderClimbMove_" .. player.UserId
+CLIMB_KEY = Enum.KeyCode.F
+CAMERA_TOGGLE_KEY = Enum.KeyCode.V
+DETECTION_DISTANCE = 5
+FLOOR_DETECTION_DISTANCE = 6
+DETECTION_INTERVAL = 1 / 30
+WALL_OFFSET = .75
+CORNER_OFFSET = 3
+CORNER_LANDING_DISTANCE = 1.6
+CONVEX_LANDING_DISTANCE = 3
+CONCAVE_TRIGGER_DISTANCE = 2
+CORNER_TRANSITION_RATE = 3.5
+MAX_TARGET_LEAD = 1.25
+CLIMB_SPEED = 16
+MIN_WALL_WIDTH = 6
+MIN_WALL_HEIGHT = 6
+SURFACE_CHANGE_THRESHOLD = 0.82
+LOST_SURFACE_GRACE = 0.4
+NORMAL_RESPONSE = 16
+CAMERA_ROTATION_SPEED = 9
+POSITION_RESPONSE = 35
+ORIENTATION_RESPONSE = 80
+CLIMB_JUMP_BACKWARD_SPEED = 52
+CLIMB_JUMP_UPWARD_SPEED = 36
+CLIMB_JUMP_FORCE_MULTIPLIER = 1.15
+ACTION_PRIORITY = 3000
+
+local raycastParams = RaycastParams.new()
+raycastParams.FilterType = Enum.RaycastFilterType.Exclude
+raycastParams.FilterDescendantsInstances = {character}
+raycastParams.IgnoreWater = true
+raycastParams.RespectCanCollide = true
+
+local piercingRaycastParams = RaycastParams.new()
+piercingRaycastParams.FilterType = Enum.RaycastFilterType.Exclude
+piercingRaycastParams.IgnoreWater = true
+piercingRaycastParams.RespectCanCollide = true
+
+modeEnabled = false
+attached = false
+destroyed = false
+moveBound = false
+cameraRotationEnabled = false
+cameraRotationOffset = 0
+transitioning = false
+transitionProgress = 0
+transitionStartFrame = nil
+transitionEndFrame = nil
+transitionStartPosition = nil
+transitionControlPosition1 = nil
+transitionControlPosition2 = nil
+transitionEndPosition = nil
+currentOffset = WALL_OFFSET
+currentNormal = Vector3.zAxis
+currentUp = Vector3.yAxis
+surfaceNormal = Vector3.zAxis
+surfaceUp = Vector3.yAxis
+currentSurfacePart = nil
+currentSurfaceLocalPoint = nil
+currentSurfaceLocalNormal = nil
+currentSurfaceLocalUp = nil
+targetSurfacePoint = nil
+detectionAccumulator = DETECTION_INTERVAL
+cornerDetectionAccumulator = DETECTION_INTERVAL
+lastSurfaceTime = 0
+lastAnimationSpeed = -1
+climbTrack = nil
+attachment = nil
+alignPosition = nil
+lalignOrientation = nil
+savedAutoRotate = humanoid.AutoRotate
+savedPlatformStand = humanoid.PlatformStand
+savedPartCollisions = {}
+collisionConnection = nil
+inputState = {
+	Forward = false,
+	Backward = false,
+	Left = false,
+	Right = false,
+}
+
+function projectOntoPlane(vector, normal)
+	return vector - normal * vector:Dot(normal)
+end
+
+function trySurfaceBasis(normal, reference)
+	if not reference then
+		return nil, nil
+	end
+	local up = projectOntoPlane(reference, normal)
+	if up.Magnitude < 0.1 then
+		return nil, nil
+	end
+	up = up.Unit
+	local right = up:Cross(normal)
+	if right.Magnitude < 0.1 then
+		return nil, nil
+	end
+	return right.Unit, up
+end
+
+function getSurfaceBasis(normal, preferredUp)
+	local right, up = trySurfaceBasis(normal, preferredUp)
+	if right then
+		return right, up
+	end
+	right, up = trySurfaceBasis(normal, Vector3.yAxis)
+	if right then
+		return right, up
+	end
+	right, up = trySurfaceBasis(normal, Vector3.zAxis)
+	if right then
+		return right, up
+	end
+	return trySurfaceBasis(normal, Vector3.xAxis)
+end
+
+function transportSurfaceUp(oldNormal, newNormal, up)
+	oldNormal = oldNormal.Unit
+	newNormal = newNormal.Unit
+	local normalDot = math.clamp(oldNormal:Dot(newNormal), -1, 1)
+	local transportedUp
+
+	if normalDot > 0.999 then
+		transportedUp = up
+	elseif normalDot < -0.999 then
+		local axis = projectOntoPlane(up, oldNormal)
+		if axis.Magnitude < 0.1 then
+			local right = getSurfaceBasis(oldNormal, up)
+			axis = right
+		end
+		transportedUp = CFrame.fromAxisAngle(axis.Unit, math.pi):VectorToWorldSpace(up)
+	else
+		local axis = oldNormal:Cross(newNormal).Unit
+		local angle = math.acos(normalDot)
+		transportedUp = CFrame.fromAxisAngle(axis, angle):VectorToWorldSpace(up)
+	end
+
+	transportedUp = projectOntoPlane(transportedUp, newNormal)
+	if transportedUp.Magnitude < 0.1 then
+		local _, fallbackUp = getSurfaceBasis(newNormal, up)
+		return fallbackUp
+	end
+	return transportedUp.Unit
+end
+
+function getCameraSurfaceUp(normal)
+	local camera = workspace.CurrentCamera
+	if not camera then
+		return nil
+	end
+	local cameraDirection = projectOntoPlane(camera.CFrame.LookVector, normal)
+	if cameraDirection.Magnitude < 0.18 then
+		return nil
+	end
+	return cameraDirection.Unit
+end
+
+function getSignedSurfaceAngle(from, to, normal)
+	from = projectOntoPlane(from, normal)
+	to = projectOntoPlane(to, normal)
+	if from.Magnitude < 0.1 or to.Magnitude < 0.1 then
+		return 0
+	end
+	from = from.Unit
+	to = to.Unit
+	return math.atan2(normal:Dot(from:Cross(to)), math.clamp(from:Dot(to), -1, 1))
+end
+
+function getCameraDesiredUp(normal)
+	local cameraUp = getCameraSurfaceUp(normal)
+	if not cameraUp then
+		return nil
+	end
+	return CFrame.fromAxisAngle(normal, cameraRotationOffset):VectorToWorldSpace(cameraUp).Unit
+end
+
+function rotateUpToward(current, target, normal, maxAngle)
+	local from = projectOntoPlane(current, normal)
+	local to = projectOntoPlane(target, normal)
+	if from.Magnitude < 0.1 or to.Magnitude < 0.1 then
+		return current
+	end
+	from = from.Unit
+	to = to.Unit
+	local angle = math.acos(math.clamp(from:Dot(to), -1, 1))
+	if angle < 0.001 then
+		return to
+	end
+	local direction = normal:Dot(from:Cross(to))
+	local sign = direction < 0 and -1 or 1
+	local step = math.min(angle, maxAngle) * sign
+	return CFrame.fromAxisAngle(normal, step):VectorToWorldSpace(from).Unit
+end
+
+function isCharacterPart(instance)
+	local model = instance and instance:FindFirstAncestorOfClass("Model")
+	return model and model ~= character and model:FindFirstChildOfClass("Humanoid") ~= nil
+end
+
+function projectedSpan(part, axis)
+	local frame = part.CFrame
+	local size = part.Size
+	return math.abs(axis:Dot(frame.RightVector)) * size.X
+		+ math.abs(axis:Dot(frame.UpVector)) * size.Y
+		+ math.abs(axis:Dot(frame.LookVector)) * size.Z
+end
+
+function isClimbable(result)
+	if not result then
+		return false
+	end
+
+	local instance = result.Instance
+	if instance == workspace.Terrain then
+		return true
+	end
+	if not instance:IsA("BasePart") or not instance.CanCollide or isCharacterPart(instance) then
+		return false
+	end
+	if instance:GetAttribute("Climbable") == false or CollectionService:HasTag(instance, "NoClimb") then
+		return false
+	end
+	if instance:GetAttribute("Climbable") == true then
+		return true
+	end
+
+	local preferredUp = Vector3.yAxis
+	if math.abs(result.Normal.Y) > 0.6 then
+		local facing = projectOntoPlane(rootPart.CFrame.LookVector, result.Normal)
+		if facing.Magnitude > 0.1 then
+			preferredUp = facing.Unit
+		end
+	end
+	local right, up = getSurfaceBasis(result.Normal, preferredUp)
+	if not right then
+		return false
+	end
+
+	return projectedSpan(instance, right) >= MIN_WALL_WIDTH
+		and projectedSpan(instance, up) >= MIN_WALL_HEIGHT
+end
+
+function blocksClimbRay(instance)
+	return instance:IsA("BasePart")
+		and (instance:GetAttribute("Climbable") == false or CollectionService:HasTag(instance, "NoClimb"))
+end
+
+function cast(origin, direction)
+	local result = workspace:Raycast(origin, direction, raycastParams)
+	if isClimbable(result) then
+		return result
+	end
+	if not result or blocksClimbRay(result.Instance) then
+		return nil
+	end
+
+	local ignored = {character, result.Instance}
+	for _ = 1, 4 do
+		piercingRaycastParams.FilterDescendantsInstances = ignored
+		result = workspace:Raycast(origin, direction, piercingRaycastParams)
+		if isClimbable(result) then
+			return result
+		end
+		if not result or blocksClimbRay(result.Instance) then
+			return nil
+		end
+		table.insert(ignored, result.Instance)
+	end
+	return nil
+end
+
+function findWallAhead()
+	local forward = projectOntoPlane(rootPart.CFrame.LookVector, Vector3.yAxis)
+	if forward.Magnitude < 0.1 then
+		return nil
+	end
+	forward = forward.Unit
+
+	local right = rootPart.CFrame.RightVector
+	local origin = rootPart.Position
+	local offsets = {
+		Vector3.zero,
+		Vector3.new(0, 1.1, 0),
+		Vector3.new(0, -1.1, 0),
+		right * 0.8,
+		right * -0.8,
+	}
+
+	local closest
+	local closestDistance = math.huge
+	for _, offset in offsets do
+		local result = cast(origin + offset, forward * DETECTION_DISTANCE)
+		if result then
+			local distance = (result.Position - origin).Magnitude
+			if distance < closestDistance then
+				closest = result
+				closestDistance = distance
+			end
+		end
+	end
+	return closest
+end
+
+function findSupportingSurface()
+	local origin = rootPart.Position + Vector3.yAxis * 0.5
+	local right = projectOntoPlane(rootPart.CFrame.RightVector, Vector3.yAxis)
+	local forward = projectOntoPlane(rootPart.CFrame.LookVector, Vector3.yAxis)
+	local offsets = {Vector3.zero}
+	if right.Magnitude > 0.1 then
+		right = right.Unit
+		table.insert(offsets, right * 0.7)
+		table.insert(offsets, right * -0.7)
+	end
+	if forward.Magnitude > 0.1 then
+		forward = forward.Unit
+		table.insert(offsets, forward * 0.7)
+		table.insert(offsets, forward * -0.7)
+	end
+
+	local closest
+	local closestDistance = math.huge
+	for _, offset in offsets do
+		local result = cast(origin + offset, -Vector3.yAxis * FLOOR_DETECTION_DISTANCE)
+		if result then
+			local distance = (result.Position - origin).Magnitude
+			if distance < closestDistance then
+				closest = result
+				closestDistance = distance
+			end
+		end
+	end
+	return closest
+end
+
+function findCurrentSurface(surfacePoint, normal)
+	local origin = surfacePoint + normal * (WALL_OFFSET + 1)
+	return cast(origin, -normal * (WALL_OFFSET + 2))
+end
+
+function findConcaveSurface(surfacePoint, normal, moveDirection, triggerDistance)
+	if moveDirection.Magnitude < 0.05 then
+		return nil
+	end
+
+	local direction = moveDirection.Unit
+	local concaveOffsets = {WALL_OFFSET + 1, WALL_OFFSET + 1.75, WALL_OFFSET + 2.75}
+	local concaveBacksteps = {0.25, 0.75, 1.5}
+	for index, normalOffset in concaveOffsets do
+		local backstep = concaveBacksteps[index]
+		local origin = surfacePoint + normal * normalOffset - direction * backstep
+		local distance = triggerDistance and triggerDistance + backstep or WALL_OFFSET * 2 + 4 + index
+		local result = cast(origin, direction * distance)
+		if result
+			and result.Normal.Unit:Dot(normal) < SURFACE_CHANGE_THRESHOLD
+			and result.Normal.Unit:Dot(direction) < -0.35
+		then
+			return result
+		end
+	end
+	return nil
+end
+
+function findConvexSurface(surfacePoint, normal, moveDirection)
+	if moveDirection.Magnitude < 0.05 then
+		return nil
+	end
+
+	local direction = moveDirection.Unit
+	local convexDepths = {0.25, 0.75, 1.5, 2.75, 4}
+	for index, depth in convexDepths do
+		local origin = surfacePoint - normal * depth + direction * (WALL_OFFSET + 1.25 + depth * 0.5)
+		local result = cast(origin, -direction * (WALL_OFFSET * 2 + 4 + index + depth))
+		if result then
+			local advance = (result.Position - surfacePoint):Dot(direction)
+			if result.Normal.Unit:Dot(normal) < SURFACE_CHANGE_THRESHOLD
+				and result.Normal.Unit:Dot(direction) > 0.2
+				and advance > -3
+				and advance < 3.5
+			then
+				return result
+			end
+		end
+	end
+	return nil
+end
+
+function findCornerSurface(surfacePoint, normal, moveDirection)
+	local concave = findConcaveSurface(surfacePoint, normal, moveDirection)
+	if concave then
+		return concave
+	end
+	return findConvexSurface(surfacePoint, normal, moveDirection)
+end
+
+function getInputVector()
+	local x = (inputState.Right and 1 or 0) - (inputState.Left and 1 or 0)
+	local y = (inputState.Forward and 1 or 0) - (inputState.Backward and 1 or 0)
+	local vector = Vector2.new(x, y)
+	if vector.Magnitude > 1 then
+		vector = vector.Unit
+	end
+	return vector
+end
+
+inputByKey = {
+	[Enum.KeyCode.W] = "Forward",
+	[Enum.KeyCode.S] = "Backward",
+	[Enum.KeyCode.A] = "Left",
+	[Enum.KeyCode.D] = "Right",
+}
+
+function onMoveAction(_, inputStateValue, inputObject)
+	local direction = inputByKey[inputObject.KeyCode]
+	if direction then
+		inputState[direction] = inputStateValue == Enum.UserInputState.Begin or inputStateValue == Enum.UserInputState.Change
+	end
+	return Enum.ContextActionResult.Sink
+end
+
+function clearInput()
+	for direction in inputState do
+		inputState[direction] = false
+	end
+end
+
+function bindMovement()
+	if moveBound then
+		return
+	end
+	moveBound = true
+	ContextActionService:BindActionAtPriority(
+		MOVE_ACTION,
+		onMoveAction,
+		false,
+		ACTION_PRIORITY,
+		Enum.KeyCode.W,
+		Enum.KeyCode.A,
+		Enum.KeyCode.S,
+		Enum.KeyCode.D
+	)
+end
+
+function unbindMovement()
+	if not moveBound then
+		return
+	end
+	moveBound = false
+	ContextActionService:UnbindAction(MOVE_ACTION)
+	clearInput()
+end
+
+function getClimbAnimation()
+	local animate = character:FindFirstChild("Animate")
+	local climb = animate and animate:FindFirstChild("climb")
+	local configured = climb and climb:FindFirstChildWhichIsA("Animation")
+	if configured and configured.AnimationId ~= "" then
+		return configured
+	end
+
+	local fallback = Instance.new("Animation")
+	fallback.Name = "SpiderClimbAnimation"
+	fallback.AnimationId = humanoid.RigType == Enum.HumanoidRigType.R6
+		and "rbxassetid://180436334"
+		or "rbxassetid://507765644"
+	fallback.Parent = character
+	return fallback
+end
+
+function ensureAnimation()
+	if climbTrack then
+		return climbTrack
+	end
+	local success, track = pcall(function()
+		return animator:LoadAnimation(getClimbAnimation())
+	end)
+	if success then
+		climbTrack = track
+		climbTrack.Looped = true
+		climbTrack.Priority = Enum.AnimationPriority.Action
+	end
+	return climbTrack
+end
+
+function setAnimationSpeed(speed)
+	local track = ensureAnimation()
+	if not track then
+		return
+	end
+	if not track.IsPlaying then
+		track:Play(0.18, 1, speed)
+		lastAnimationSpeed = speed
+	elseif math.abs(lastAnimationSpeed - speed) > 0.04 then
+		track:AdjustSpeed(speed)
+		lastAnimationSpeed = speed
+	end
+end
+
+function stopAnimation2()
+	if climbTrack and climbTrack.IsPlaying then
+		climbTrack:Stop(0.18)
+	end
+	lastAnimationSpeed = -1
+end
+
+local function createConstraints()
+	if attachment then
+		return
+	end
+
+	attachment = Instance.new("Attachment")
+	attachment.Name = "SpiderClimbAttachment"
+	attachment.Parent = rootPart
+
+	alignPosition = Instance.new("AlignPosition")
+	alignPosition.Name = "SpiderClimbPosition"
+	alignPosition.Mode = Enum.PositionAlignmentMode.OneAttachment
+	alignPosition.Attachment0 = attachment
+	alignPosition.ApplyAtCenterOfMass = true
+	alignPosition.MaxForce = 500000
+	alignPosition.MaxVelocity = CLIMB_SPEED * 2.5
+	alignPosition.Responsiveness = POSITION_RESPONSE
+	alignPosition.RigidityEnabled = false
+	alignPosition.Enabled = false
+	alignPosition.Parent = rootPart
+
+	alignOrientation = Instance.new("AlignOrientation")
+	alignOrientation.Name = "SpiderClimbOrientation"
+	alignOrientation.Mode = Enum.OrientationAlignmentMode.OneAttachment
+	alignOrientation.Attachment0 = attachment
+	alignOrientation.MaxTorque = 500000
+	alignOrientation.MaxAngularVelocity = 40
+	alignOrientation.Responsiveness = ORIENTATION_RESPONSE
+	alignOrientation.RigidityEnabled = false
+	alignOrientation.Enabled = false
+	alignOrientation.Parent = rootPart
+end
+
+local function disableCharacterCollisions()
+	table.clear(savedPartCollisions)
+	for _, descendant in character:GetDescendants() do
+		if descendant:IsA("BasePart") then
+			savedPartCollisions[descendant] = descendant.CanCollide
+			descendant.CanCollide = false
+		end
+	end
+	if collisionConnection then
+		collisionConnection:Disconnect()
+	end
+	collisionConnection = character.DescendantAdded:Connect(function(descendant)
+		if descendant:IsA("BasePart") and savedPartCollisions[descendant] == nil then
+			savedPartCollisions[descendant] = descendant.CanCollide
+			descendant.CanCollide = false
+		end
+	end)
+end
+
+local function maintainCharacterCollisions()
+	for part in savedPartCollisions do
+		if part.Parent and part.CanCollide then
+			part.CanCollide = false
+		end
+	end
+end
+
+local function restoreCharacterCollisions()
+	if collisionConnection then
+		collisionConnection:Disconnect()
+		collisionConnection = nil
+	end
+	for part, canCollide in savedPartCollisions do
+		if part.Parent then
+			part.CanCollide = canCollide
+		end
+	end
+	table.clear(savedPartCollisions)
+end
+
+local function setSurface(result, up, surfacePoint)
+	surfaceNormal = result.Normal.Unit
+	local projectedUp = projectOntoPlane(up, surfaceNormal)
+	if projectedUp.Magnitude < 0.1 then
+		local _, fallbackUp = getSurfaceBasis(surfaceNormal, currentUp)
+		projectedUp = fallbackUp
+	end
+	surfaceUp = projectedUp.Unit
+	targetSurfacePoint = surfacePoint or result.Position
+	currentSurfacePart = result.Instance:IsA("BasePart") and result.Instance or nil
+	if currentSurfacePart then
+		currentSurfaceLocalPoint = currentSurfacePart.CFrame:PointToObjectSpace(targetSurfacePoint)
+		currentSurfaceLocalNormal = currentSurfacePart.CFrame:VectorToObjectSpace(surfaceNormal)
+		currentSurfaceLocalUp = currentSurfacePart.CFrame:VectorToObjectSpace(surfaceUp)
+	else
+		currentSurfaceLocalPoint = nil
+		currentSurfaceLocalNormal = nil
+		currentSurfaceLocalUp = nil
+	end
+end
+
+local function setStoredSurfaceUp(up)
+	local projectedUp = projectOntoPlane(up, surfaceNormal)
+	if projectedUp.Magnitude < 0.1 then
+		return
+	end
+	surfaceUp = projectedUp.Unit
+	if currentSurfacePart then
+		currentSurfaceLocalUp = currentSurfacePart.CFrame:VectorToObjectSpace(surfaceUp)
+	end
+end
+
+local function refreshMovingSurface()
+	if not currentSurfacePart or not currentSurfacePart.Parent then
+		return
+	end
+	targetSurfacePoint = currentSurfacePart.CFrame:PointToWorldSpace(currentSurfaceLocalPoint)
+	surfaceNormal = currentSurfacePart.CFrame:VectorToWorldSpace(currentSurfaceLocalNormal).Unit
+	surfaceUp = currentSurfacePart.CFrame:VectorToWorldSpace(currentSurfaceLocalUp).Unit
+end
+
+local function detach()
+	if not attached then
+		return
+	end
+
+	attached = false
+	cameraRotationOffset = 0
+	transitioning = false
+	transitionProgress = 0
+	transitionStartFrame = nil
+	transitionEndFrame = nil
+	transitionStartPosition = nil
+	transitionControlPosition1 = nil
+	transitionControlPosition2 = nil
+	transitionEndPosition = nil
+	currentOffset = WALL_OFFSET
+	currentSurfacePart = nil
+	currentSurfaceLocalPoint = nil
+	currentSurfaceLocalNormal = nil
+	currentSurfaceLocalUp = nil
+	targetSurfacePoint = nil
+	character:SetAttribute("IsWallClimbing", false)
+	unbindMovement()
+
+	if alignPosition then
+		alignPosition.Enabled = false
+	end
+	if alignOrientation then
+		alignOrientation.Enabled = false
+	end
+	restoreCharacterCollisions()
+
+	humanoid.AutoRotate = savedAutoRotate
+	humanoid.PlatformStand = savedPlatformStand
+	local velocity = rootPart.AssemblyLinearVelocity
+	rootPart.AssemblyLinearVelocity = Vector3.new(velocity.X, math.min(velocity.Y, 0), velocity.Z)
+	if humanoid.Health > 0 then
+		humanoid:ChangeState(Enum.HumanoidStateType.Freefall)
+	end
+end
+
+local function attach(result)
+	if attached or not isClimbable(result) then
+		return
+	end
+
+	local right, up = getSurfaceBasis(result.Normal, Vector3.yAxis)
+	if not right then
+		return
+	end
+
+	createConstraints()
+	savedAutoRotate = humanoid.AutoRotate
+	savedPlatformStand = humanoid.PlatformStand
+	disableCharacterCollisions()
+	currentNormal = result.Normal.Unit
+	currentUp = up
+	currentOffset = WALL_OFFSET
+	setSurface(result, up)
+	lastSurfaceTime = os.clock()
+	transitioning = false
+	transitionProgress = 0
+	attached = true
+	character:SetAttribute("IsWallClimbing", true)
+	bindMovement()
+
+	humanoid.AutoRotate = false
+	humanoid.PlatformStand = true
+	rootPart.AssemblyLinearVelocity = Vector3.zero
+	rootPart.AssemblyAngularVelocity = Vector3.zero
+
+	alignPosition.Position = targetSurfacePoint + currentNormal * WALL_OFFSET
+	alignOrientation.CFrame = CFrame.fromMatrix(Vector3.zero, right, up, currentNormal)
+	alignPosition.Enabled = true
+	alignOrientation.Enabled = true
+end
+
+local function setMode(enabled)
+	if destroyed or humanoid.Health <= 0 or modeEnabled == enabled then
+		return
+	end
+
+	modeEnabled = enabled
+	character:SetAttribute("ClimbModeEnabled", enabled)
+
+	if enabled then
+		setAnimationSpeed(0.55)
+		local supportingSurface = findSupportingSurface()
+		if supportingSurface then
+			attach(supportingSurface)
+		end
+	else
+		detach()
+		stopAnimation2()
+	end
+end
+
+local function onToggleAction(_, inputStateValue)
+	if inputStateValue ~= Enum.UserInputState.Begin then
+		return Enum.ContextActionResult.Sink
+	end
+	if UserInputService:GetFocusedTextBox() then
+		return Enum.ContextActionResult.Pass
+	end
+	setMode(not modeEnabled)
+	return Enum.ContextActionResult.Sink
+end
+
+local function onClimbJumpAction(_, inputStateValue)
+	if inputStateValue ~= Enum.UserInputState.Begin then
+		return attached and Enum.ContextActionResult.Sink or Enum.ContextActionResult.Pass
+	end
+	if UserInputService:GetFocusedTextBox() or not attached then
+		return Enum.ContextActionResult.Pass
+	end
+	local frame = rootPart.CFrame
+	local backward = frame:VectorToWorldSpace(Vector3.zAxis).Unit
+	local upward = frame:VectorToWorldSpace(Vector3.yAxis).Unit
+	setMode(false)
+	rootPart.AssemblyLinearVelocity = (backward * CLIMB_JUMP_BACKWARD_SPEED
+		+ upward * CLIMB_JUMP_UPWARD_SPEED) * CLIMB_JUMP_FORCE_MULTIPLIER
+	rootPart.AssemblyAngularVelocity = Vector3.zero
+	if humanoid.Health > 0 then
+		humanoid:ChangeState(Enum.HumanoidStateType.Freefall)
+	end
+	return Enum.ContextActionResult.Sink
+end
+
+local function setCameraRotationMode(enabled)
+	if cameraRotationEnabled == enabled then
+		return
+	end
+	cameraRotationEnabled = enabled
+	cameraRotationOffset = 0
+	character:SetAttribute("CameraClimbRotationEnabled", enabled)
+
+	if not attached then
+		return
+	end
+
+	if enabled then
+		local cameraUp = getCameraDesiredUp(surfaceNormal)
+		if cameraUp then
+			setStoredSurfaceUp(cameraUp)
+		end
+	else
+		setStoredSurfaceUp(currentUp)
+	end
+end
+
+local function onCameraToggleAction(_, inputStateValue)
+	if inputStateValue ~= Enum.UserInputState.Begin then
+		return Enum.ContextActionResult.Sink
+	end
+	if UserInputService:GetFocusedTextBox() then
+		return Enum.ContextActionResult.Pass
+	end
+	setCameraRotationMode(not cameraRotationEnabled)
+	return Enum.ContextActionResult.Sink
+end
+
+local function cubicBezier(point0, point1, point2, point3, alpha)
+	local a = point0:Lerp(point1, alpha)
+	local b = point1:Lerp(point2, alpha)
+	local c = point2:Lerp(point3, alpha)
+	return a:Lerp(b, alpha):Lerp(b:Lerp(c, alpha), alpha)
+end
+
+local function beginCornerTransition(result, input, oldSurfaceNormal)
+	local startNormal = currentNormal
+	local startUp = currentUp
+	local startRight = startUp:Cross(startNormal).Unit
+	local moveDirection = startRight * input.X + startUp * input.Y
+	local newSurfaceNormal = result.Normal.Unit
+	local isConcave = moveDirection.Magnitude > 0.05 and newSurfaceNormal:Dot(moveDirection.Unit) < -0.45
+	local newSurfaceUp = transportSurfaceUp(startNormal, newSurfaceNormal, startUp)
+
+	if cameraRotationEnabled then
+		local cameraUp = getCameraSurfaceUp(newSurfaceNormal)
+		if cameraUp then
+			cameraRotationOffset = getSignedSurfaceAngle(cameraUp, newSurfaceUp, newSurfaceNormal)
+		end
+	end
+
+	local oldSurfacePoint = targetSurfacePoint
+	local correctionLimit = CORNER_OFFSET + 1.5
+	local planeCorrection = math.clamp(
+		(oldSurfacePoint - result.Position):Dot(oldSurfaceNormal),
+		-correctionLimit,
+		correctionLimit
+	)
+	local edgePoint = result.Position + oldSurfaceNormal * planeCorrection
+	edgePoint -= newSurfaceNormal * (edgePoint - result.Position):Dot(newSurfaceNormal)
+
+	local landingPoint
+	if isConcave then
+		landingPoint = edgePoint + oldSurfaceNormal * CORNER_LANDING_DISTANCE
+	else
+		landingPoint = result.Position - oldSurfaceNormal * CONVEX_LANDING_DISTANCE
+	end
+	landingPoint -= newSurfaceNormal * (landingPoint - result.Position):Dot(newSurfaceNormal)
+
+	transitionStartFrame = CFrame.fromMatrix(Vector3.zero, startRight, startUp, startNormal)
+	transitionStartPosition = alignPosition.Position
+	setSurface(result, newSurfaceUp, landingPoint)
+	local endRight = surfaceUp:Cross(surfaceNormal).Unit
+	transitionEndFrame = CFrame.fromMatrix(Vector3.zero, endRight, surfaceUp, surfaceNormal)
+	transitionEndPosition = targetSurfacePoint + surfaceNormal * WALL_OFFSET
+
+	local clearancePoint
+	if isConcave then
+		clearancePoint = edgePoint + startNormal * CORNER_OFFSET + newSurfaceNormal * CORNER_OFFSET
+	else
+		local cornerDirection = startNormal + newSurfaceNormal
+		if cornerDirection.Magnitude < 0.1 then
+			cornerDirection = startNormal
+		end
+		clearancePoint = edgePoint + cornerDirection.Unit * CORNER_OFFSET
+	end
+	transitionControlPosition1 = transitionStartPosition:Lerp(clearancePoint, 0.72)
+	transitionControlPosition2 = transitionEndPosition:Lerp(clearancePoint, 0.72)
+	transitionProgress = 0
+	transitioning = true
+end
+
+local function updateCornerTransition(deltaTime)
+	if currentSurfacePart and not currentSurfacePart.Parent then
+		detach()
+		return
+	end
+
+	transitionProgress = math.min(1, transitionProgress + deltaTime * CORNER_TRANSITION_RATE)
+	local easedProgress = transitionProgress * transitionProgress * (3 - 2 * transitionProgress)
+	local frame = transitionStartFrame:Lerp(transitionEndFrame, easedProgress)
+	currentNormal = -frame.LookVector
+	currentUp = frame.UpVector
+	local right = frame.RightVector
+
+	alignPosition.Position = cubicBezier(
+		transitionStartPosition,
+		transitionControlPosition1,
+		transitionControlPosition2,
+		transitionEndPosition,
+		easedProgress
+	)
+	alignOrientation.CFrame = frame
+	rootPart.AssemblyAngularVelocity = Vector3.zero
+	setAnimationSpeed(0.85)
+
+	if transitionProgress >= 1 then
+		transitioning = false
+		currentNormal = surfaceNormal
+		currentUp = surfaceUp
+		currentOffset = WALL_OFFSET
+		local endRight = currentUp:Cross(currentNormal).Unit
+		alignPosition.Position = transitionEndPosition
+		alignOrientation.CFrame = CFrame.fromMatrix(Vector3.zero, endRight, currentUp, currentNormal)
+	end
+end
+
+local function updateAttached(deltaTime)
+	maintainCharacterCollisions()
+	if transitioning then
+		updateCornerTransition(deltaTime)
+		return
+	end
+
+	refreshMovingSurface()
+
+	local projectedCurrentUp = projectOntoPlane(currentUp, currentNormal)
+	if projectedCurrentUp.Magnitude < 0.1 then
+		local _, fallbackUp = getSurfaceBasis(currentNormal, surfaceUp)
+		projectedCurrentUp = fallbackUp
+	end
+	currentUp = projectedCurrentUp.Unit
+	local right = currentUp:Cross(currentNormal).Unit
+
+	local input = getInputVector()
+	local moveDirection = right * input.X + currentUp * input.Y
+	local intendedSurfacePoint = targetSurfacePoint + moveDirection * CLIMB_SPEED * deltaTime
+	local rootSurfacePoint = rootPart.Position - currentNormal * currentOffset
+	local targetLead = projectOntoPlane(intendedSurfacePoint - rootSurfacePoint, currentNormal)
+	if targetLead.Magnitude > MAX_TARGET_LEAD then
+		intendedSurfacePoint -= targetLead - targetLead.Unit * MAX_TARGET_LEAD
+	end
+	local result = findCurrentSurface(intendedSurfacePoint, surfaceNormal)
+	if result and moveDirection.Magnitude > 0.05 then
+		cornerDetectionAccumulator += deltaTime
+		if cornerDetectionAccumulator >= DETECTION_INTERVAL then
+			cornerDetectionAccumulator %= DETECTION_INTERVAL
+			local concave = findConcaveSurface(
+				intendedSurfacePoint,
+				surfaceNormal,
+				moveDirection,
+				CONCAVE_TRIGGER_DISTANCE
+			)
+			if concave then
+				result = concave
+			end
+		end
+	else
+		cornerDetectionAccumulator = DETECTION_INTERVAL
+	end
+
+	if not result then
+		result = findCornerSurface(intendedSurfacePoint, surfaceNormal, moveDirection)
+	end
+
+	if not result then
+		if os.clock() - lastSurfaceTime > LOST_SURFACE_GRACE then
+			detach()
+		end
+		setAnimationSpeed(input.Magnitude > 0.05 and 0.65 or 0)
+		return
+	end
+
+	lastSurfaceTime = os.clock()
+	local oldSurfaceNormal = surfaceNormal
+	local newSurfaceNormal = result.Normal.Unit
+
+	if newSurfaceNormal:Dot(oldSurfaceNormal) < SURFACE_CHANGE_THRESHOLD then
+		beginCornerTransition(result, input, oldSurfaceNormal)
+		updateCornerTransition(deltaTime)
+		return
+	end
+
+	local transportedUp = projectOntoPlane(surfaceUp, newSurfaceNormal)
+	if transportedUp.Magnitude < 0.1 then
+		local _, fallbackUp = getSurfaceBasis(newSurfaceNormal, currentUp)
+		transportedUp = fallbackUp
+	end
+	local desiredSurfaceUp = transportedUp.Unit
+	if cameraRotationEnabled then
+		local cameraUp = getCameraDesiredUp(newSurfaceNormal)
+		if cameraUp then
+			desiredSurfaceUp = cameraUp
+		end
+	end
+	setSurface(result, desiredSurfaceUp)
+
+	local alpha = math.clamp(deltaTime * NORMAL_RESPONSE, 0, 1)
+	local blendedNormal = currentNormal:Lerp(surfaceNormal, alpha)
+	if blendedNormal.Magnitude > 0.1 then
+		currentNormal = blendedNormal.Unit
+	end
+
+	local desiredCurrentUp = projectOntoPlane(surfaceUp, currentNormal)
+	if desiredCurrentUp.Magnitude < 0.1 then
+		local _, fallbackUp = getSurfaceBasis(currentNormal, currentUp)
+		desiredCurrentUp = fallbackUp
+	end
+	if cameraRotationEnabled then
+		currentUp = rotateUpToward(
+			currentUp,
+			desiredCurrentUp.Unit,
+			currentNormal,
+			deltaTime * CAMERA_ROTATION_SPEED
+		)
+	else
+		local blendedUp = currentUp:Lerp(desiredCurrentUp.Unit, alpha)
+		blendedUp = projectOntoPlane(blendedUp, currentNormal)
+		if blendedUp.Magnitude < 0.1 then
+			local _, fallbackUp = getSurfaceBasis(currentNormal, surfaceUp)
+			blendedUp = fallbackUp
+		end
+		currentUp = blendedUp.Unit
+	end
+	right = currentUp:Cross(currentNormal).Unit
+
+	alignPosition.Position = targetSurfacePoint + currentNormal * currentOffset
+	alignOrientation.CFrame = CFrame.fromMatrix(Vector3.zero, right, currentUp, currentNormal)
+	rootPart.AssemblyAngularVelocity = Vector3.zero
+
+	if input.Magnitude > 0.05 then
+		setAnimationSpeed(math.clamp(CLIMB_SPEED / 16, 0.65, 1.5))
+	else
+		setAnimationSpeed(0)
+	end
+end
+
+local function updateDetached(deltaTime)
+	setAnimationSpeed(humanoid.MoveDirection.Magnitude > 0.05 and 0.7 or 0.25)
+	detectionAccumulator += deltaTime
+	if detectionAccumulator < DETECTION_INTERVAL then
+		return
+	end
+	detectionAccumulator %= DETECTION_INTERVAL
+	local wall = findWallAhead()
+	if wall then
+		attach(wall)
+	end
+end
+
+character:SetAttribute("ClimbModeEnabled", false)
+character:SetAttribute("IsWallClimbing", false)
+character:SetAttribute("CameraClimbRotationEnabled", false)
+
+ContextActionService:BindActionAtPriority(
+	TOGGLE_ACTION,
+	onToggleAction,
+	false,
+	ACTION_PRIORITY,
+	CLIMB_KEY
+)
+
+ContextActionService:BindActionAtPriority(
+	CAMERA_TOGGLE_ACTION,
+	onCameraToggleAction,
+	false,
+	ACTION_PRIORITY,
+	CAMERA_TOGGLE_KEY
+)
+
+ContextActionService:BindActionAtPriority(
+	JUMP_ACTION,
+	onClimbJumpAction,
+	false,
+	ACTION_PRIORITY + 1,
+	Enum.KeyCode.Space
+)
+
+UserInputService.WindowFocusReleased:Connect(clearInput)
+
+humanoid.Died:Connect(function()
+	setMode(false)
+end)
+
+RunService.Heartbeat:Connect(function(deltaTime)
+	if destroyed or not modeEnabled or humanoid.Health <= 0 then
+		return
+	end
+	if attached then
+		updateAttached(math.min(deltaTime, 1 / 20))
+	else
+		updateDetached(deltaTime)
+	end
+end)
+
+character.Destroying:Connect(function()
+	--destroyed = true
+	detach()
+	stopAnimation()
+	--ContextActionService:UnbindAction(TOGGLE_ACTION)
+	--ContextActionService:UnbindAction(CAMERA_TOGGLE_ACTION)
+	--ContextActionService:UnbindAction(JUMP_ACTION)
+	--ContextActionService:UnbindAction(MOVE_ACTION)
+end)
