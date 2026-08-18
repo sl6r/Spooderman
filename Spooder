@@ -1,0 +1,3247 @@
+local function Alert(Plr)
+    game:GetService("StarterGui"):SetCore("SendNotification", {
+        Title = "Mod Detected | "..Plr.Name,
+        Text = "Moderator Detected",
+        Duration = 5,
+    })
+end
+
+for i,Plr in next, game:GetService('Players'):GetPlayers() do
+    if Plr:FindFirstChild("IS_MOD") then return Alert(Plr) end
+end
+
+game:GetService('Players').PlayerAdded:Connect(function(Plr)
+    task.wait(3)
+    if Plr:FindFirstChild("IS_MOD") then return Alert(Plr) end
+end)
+
+local Players = game:GetService("Players")
+local ContextActionService = game:GetService("ContextActionService")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local CollectionService = game:GetService("CollectionService")
+
+local player = Players.LocalPlayer
+local character = player.Character
+local humanoid = character:WaitForChild("Humanoid")
+local rootPart = character:WaitForChild("HumanoidRootPart")
+local animator = humanoid:FindFirstChildOfClass("Animator") or humanoid:WaitForChild("Animator")
+
+local TOGGLE_ACTION = "SpiderClimbToggle_" .. player.UserId
+local CAMERA_TOGGLE_ACTION = "SpiderClimbCameraToggle_" .. player.UserId
+local JUMP_ACTION = "SpiderClimbJump_" .. player.UserId
+local MOVE_ACTION = "SpiderClimbMove_" .. player.UserId
+local CLIMB_KEY = Enum.KeyCode.F
+local CAMERA_TOGGLE_KEY = Enum.KeyCode.V
+local DETECTION_DISTANCE = 5
+local FLOOR_DETECTION_DISTANCE = 6
+local DETECTION_INTERVAL = 1 / 30
+local WALL_OFFSET = .75
+local CORNER_OFFSET = 3
+local CORNER_LANDING_DISTANCE = 1.6
+local CONVEX_LANDING_DISTANCE = 3
+local CONCAVE_TRIGGER_DISTANCE = 2
+local CORNER_TRANSITION_RATE = 3.5
+local MAX_TARGET_LEAD = 1.25
+local CLIMB_SPEED = 16
+local MIN_WALL_WIDTH = 6
+local MIN_WALL_HEIGHT = 6
+local SURFACE_CHANGE_THRESHOLD = 0.82
+local LOST_SURFACE_GRACE = 0.4
+local NORMAL_RESPONSE = 16
+local CAMERA_ROTATION_SPEED = 9
+local POSITION_RESPONSE = 35
+local ORIENTATION_RESPONSE = 80
+local CLIMB_JUMP_BACKWARD_SPEED = 52
+local CLIMB_JUMP_UPWARD_SPEED = 36
+local CLIMB_JUMP_FORCE_MULTIPLIER = 1.15
+local ACTION_PRIORITY = 3000
+
+local raycastParams = RaycastParams.new()
+raycastParams.FilterType = Enum.RaycastFilterType.Exclude
+raycastParams.FilterDescendantsInstances = {character}
+raycastParams.IgnoreWater = true
+raycastParams.RespectCanCollide = true
+
+local piercingRaycastParams = RaycastParams.new()
+piercingRaycastParams.FilterType = Enum.RaycastFilterType.Exclude
+piercingRaycastParams.IgnoreWater = true
+piercingRaycastParams.RespectCanCollide = true
+
+local modeEnabled = false
+local attached = false
+local destroyed = false
+local moveBound = false
+local cameraRotationEnabled = false
+local cameraRotationOffset = 0
+local transitioning = false
+local transitionProgress = 0
+local transitionStartFrame
+local transitionEndFrame
+local transitionStartPosition
+local transitionControlPosition1
+local transitionControlPosition2
+local transitionEndPosition
+local currentOffset = WALL_OFFSET
+local currentNormal = Vector3.zAxis
+local currentUp = Vector3.yAxis
+local surfaceNormal = Vector3.zAxis
+local surfaceUp = Vector3.yAxis
+local currentSurfacePart
+local currentSurfaceLocalPoint
+local currentSurfaceLocalNormal
+local currentSurfaceLocalUp
+local targetSurfacePoint
+local detectionAccumulator = DETECTION_INTERVAL
+local cornerDetectionAccumulator = DETECTION_INTERVAL
+local lastSurfaceTime = 0
+local lastAnimationSpeed = -1
+local climbTrack
+local attachment
+local alignPosition
+local alignOrientation
+local savedAutoRotate = humanoid.AutoRotate
+local savedPlatformStand = humanoid.PlatformStand
+local savedPartCollisions = {}
+local collisionConnection
+local inputState = {
+	Forward = false,
+	Backward = false,
+	Left = false,
+	Right = false,
+}
+
+local function projectOntoPlane(vector, normal)
+	return vector - normal * vector:Dot(normal)
+end
+
+local function trySurfaceBasis(normal, reference)
+	if not reference then
+		return nil, nil
+	end
+	local up = projectOntoPlane(reference, normal)
+	if up.Magnitude < 0.1 then
+		return nil, nil
+	end
+	up = up.Unit
+	local right = up:Cross(normal)
+	if right.Magnitude < 0.1 then
+		return nil, nil
+	end
+	return right.Unit, up
+end
+
+local function getSurfaceBasis(normal, preferredUp)
+	local right, up = trySurfaceBasis(normal, preferredUp)
+	if right then
+		return right, up
+	end
+	right, up = trySurfaceBasis(normal, Vector3.yAxis)
+	if right then
+		return right, up
+	end
+	right, up = trySurfaceBasis(normal, Vector3.zAxis)
+	if right then
+		return right, up
+	end
+	return trySurfaceBasis(normal, Vector3.xAxis)
+end
+
+local function transportSurfaceUp(oldNormal, newNormal, up)
+	oldNormal = oldNormal.Unit
+	newNormal = newNormal.Unit
+	local normalDot = math.clamp(oldNormal:Dot(newNormal), -1, 1)
+	local transportedUp
+
+	if normalDot > 0.999 then
+		transportedUp = up
+	elseif normalDot < -0.999 then
+		local axis = projectOntoPlane(up, oldNormal)
+		if axis.Magnitude < 0.1 then
+			local right = getSurfaceBasis(oldNormal, up)
+			axis = right
+		end
+		transportedUp = CFrame.fromAxisAngle(axis.Unit, math.pi):VectorToWorldSpace(up)
+	else
+		local axis = oldNormal:Cross(newNormal).Unit
+		local angle = math.acos(normalDot)
+		transportedUp = CFrame.fromAxisAngle(axis, angle):VectorToWorldSpace(up)
+	end
+
+	transportedUp = projectOntoPlane(transportedUp, newNormal)
+	if transportedUp.Magnitude < 0.1 then
+		local _, fallbackUp = getSurfaceBasis(newNormal, up)
+		return fallbackUp
+	end
+	return transportedUp.Unit
+end
+
+local function getCameraSurfaceUp(normal)
+	local camera = workspace.CurrentCamera
+	if not camera then
+		return nil
+	end
+	local cameraDirection = projectOntoPlane(camera.CFrame.LookVector, normal)
+	if cameraDirection.Magnitude < 0.18 then
+		return nil
+	end
+	return cameraDirection.Unit
+end
+
+local function getSignedSurfaceAngle(from, to, normal)
+	from = projectOntoPlane(from, normal)
+	to = projectOntoPlane(to, normal)
+	if from.Magnitude < 0.1 or to.Magnitude < 0.1 then
+		return 0
+	end
+	from = from.Unit
+	to = to.Unit
+	return math.atan2(normal:Dot(from:Cross(to)), math.clamp(from:Dot(to), -1, 1))
+end
+
+local function getCameraDesiredUp(normal)
+	local cameraUp = getCameraSurfaceUp(normal)
+	if not cameraUp then
+		return nil
+	end
+	return CFrame.fromAxisAngle(normal, cameraRotationOffset):VectorToWorldSpace(cameraUp).Unit
+end
+
+local function rotateUpToward(current, target, normal, maxAngle)
+	local from = projectOntoPlane(current, normal)
+	local to = projectOntoPlane(target, normal)
+	if from.Magnitude < 0.1 or to.Magnitude < 0.1 then
+		return current
+	end
+	from = from.Unit
+	to = to.Unit
+	local angle = math.acos(math.clamp(from:Dot(to), -1, 1))
+	if angle < 0.001 then
+		return to
+	end
+	local direction = normal:Dot(from:Cross(to))
+	local sign = direction < 0 and -1 or 1
+	local step = math.min(angle, maxAngle) * sign
+	return CFrame.fromAxisAngle(normal, step):VectorToWorldSpace(from).Unit
+end
+
+local function isCharacterPart(instance)
+	local model = instance and instance:FindFirstAncestorOfClass("Model")
+	return model and model ~= character and model:FindFirstChildOfClass("Humanoid") ~= nil
+end
+
+local function projectedSpan(part, axis)
+	local frame = part.CFrame
+	local size = part.Size
+	return math.abs(axis:Dot(frame.RightVector)) * size.X
+		+ math.abs(axis:Dot(frame.UpVector)) * size.Y
+		+ math.abs(axis:Dot(frame.LookVector)) * size.Z
+end
+
+local function isClimbable(result)
+	if not result then
+		return false
+	end
+
+	local instance = result.Instance
+	if instance == workspace.Terrain then
+		return true
+	end
+	if not instance:IsA("BasePart") or not instance.CanCollide or isCharacterPart(instance) then
+		return false
+	end
+	if instance:GetAttribute("Climbable") == false or CollectionService:HasTag(instance, "NoClimb") then
+		return false
+	end
+	if instance:GetAttribute("Climbable") == true then
+		return true
+	end
+
+	local preferredUp = Vector3.yAxis
+	if math.abs(result.Normal.Y) > 0.6 then
+		local facing = projectOntoPlane(rootPart.CFrame.LookVector, result.Normal)
+		if facing.Magnitude > 0.1 then
+			preferredUp = facing.Unit
+		end
+	end
+	local right, up = getSurfaceBasis(result.Normal, preferredUp)
+	if not right then
+		return false
+	end
+
+	return projectedSpan(instance, right) >= MIN_WALL_WIDTH
+		and projectedSpan(instance, up) >= MIN_WALL_HEIGHT
+end
+
+local function blocksClimbRay(instance)
+	return instance:IsA("BasePart")
+		and (instance:GetAttribute("Climbable") == false or CollectionService:HasTag(instance, "NoClimb"))
+end
+
+local function cast(origin, direction)
+	local result = workspace:Raycast(origin, direction, raycastParams)
+	if isClimbable(result) then
+		return result
+	end
+	if not result or blocksClimbRay(result.Instance) then
+		return nil
+	end
+
+	local ignored = {character, result.Instance}
+	for _ = 1, 4 do
+		piercingRaycastParams.FilterDescendantsInstances = ignored
+		result = workspace:Raycast(origin, direction, piercingRaycastParams)
+		if isClimbable(result) then
+			return result
+		end
+		if not result or blocksClimbRay(result.Instance) then
+			return nil
+		end
+		table.insert(ignored, result.Instance)
+	end
+	return nil
+end
+
+local function findWallAhead()
+	local forward = projectOntoPlane(rootPart.CFrame.LookVector, Vector3.yAxis)
+	if forward.Magnitude < 0.1 then
+		return nil
+	end
+	forward = forward.Unit
+
+	local right = rootPart.CFrame.RightVector
+	local origin = rootPart.Position
+	local offsets = {
+		Vector3.zero,
+		Vector3.new(0, 1.1, 0),
+		Vector3.new(0, -1.1, 0),
+		right * 0.8,
+		right * -0.8,
+	}
+
+	local closest
+	local closestDistance = math.huge
+	for _, offset in offsets do
+		local result = cast(origin + offset, forward * DETECTION_DISTANCE)
+		if result then
+			local distance = (result.Position - origin).Magnitude
+			if distance < closestDistance then
+				closest = result
+				closestDistance = distance
+			end
+		end
+	end
+	return closest
+end
+
+local function findSupportingSurface()
+	local origin = rootPart.Position + Vector3.yAxis * 0.5
+	local right = projectOntoPlane(rootPart.CFrame.RightVector, Vector3.yAxis)
+	local forward = projectOntoPlane(rootPart.CFrame.LookVector, Vector3.yAxis)
+	local offsets = {Vector3.zero}
+	if right.Magnitude > 0.1 then
+		right = right.Unit
+		table.insert(offsets, right * 0.7)
+		table.insert(offsets, right * -0.7)
+	end
+	if forward.Magnitude > 0.1 then
+		forward = forward.Unit
+		table.insert(offsets, forward * 0.7)
+		table.insert(offsets, forward * -0.7)
+	end
+
+	local closest
+	local closestDistance = math.huge
+	for _, offset in offsets do
+		local result = cast(origin + offset, -Vector3.yAxis * FLOOR_DETECTION_DISTANCE)
+		if result then
+			local distance = (result.Position - origin).Magnitude
+			if distance < closestDistance then
+				closest = result
+				closestDistance = distance
+			end
+		end
+	end
+	return closest
+end
+
+local function findCurrentSurface(surfacePoint, normal)
+	local origin = surfacePoint + normal * (WALL_OFFSET + 1)
+	return cast(origin, -normal * (WALL_OFFSET + 2))
+end
+
+local function findConcaveSurface(surfacePoint, normal, moveDirection, triggerDistance)
+	if moveDirection.Magnitude < 0.05 then
+		return nil
+	end
+
+	local direction = moveDirection.Unit
+	local concaveOffsets = {WALL_OFFSET + 1, WALL_OFFSET + 1.75, WALL_OFFSET + 2.75}
+	local concaveBacksteps = {0.25, 0.75, 1.5}
+	for index, normalOffset in concaveOffsets do
+		local backstep = concaveBacksteps[index]
+		local origin = surfacePoint + normal * normalOffset - direction * backstep
+		local distance = triggerDistance and triggerDistance + backstep or WALL_OFFSET * 2 + 4 + index
+		local result = cast(origin, direction * distance)
+		if result
+			and result.Normal.Unit:Dot(normal) < SURFACE_CHANGE_THRESHOLD
+			and result.Normal.Unit:Dot(direction) < -0.35
+		then
+			return result
+		end
+	end
+	return nil
+end
+
+local function findConvexSurface(surfacePoint, normal, moveDirection)
+	if moveDirection.Magnitude < 0.05 then
+		return nil
+	end
+
+	local direction = moveDirection.Unit
+	local convexDepths = {0.25, 0.75, 1.5, 2.75, 4}
+	for index, depth in convexDepths do
+		local origin = surfacePoint - normal * depth + direction * (WALL_OFFSET + 1.25 + depth * 0.5)
+		local result = cast(origin, -direction * (WALL_OFFSET * 2 + 4 + index + depth))
+		if result then
+			local advance = (result.Position - surfacePoint):Dot(direction)
+			if result.Normal.Unit:Dot(normal) < SURFACE_CHANGE_THRESHOLD
+				and result.Normal.Unit:Dot(direction) > 0.2
+				and advance > -3
+				and advance < 3.5
+			then
+				return result
+			end
+		end
+	end
+	return nil
+end
+
+local function findCornerSurface(surfacePoint, normal, moveDirection)
+	local concave = findConcaveSurface(surfacePoint, normal, moveDirection)
+	if concave then
+		return concave
+	end
+	return findConvexSurface(surfacePoint, normal, moveDirection)
+end
+
+local function getInputVector()
+	local x = (inputState.Right and 1 or 0) - (inputState.Left and 1 or 0)
+	local y = (inputState.Forward and 1 or 0) - (inputState.Backward and 1 or 0)
+	local vector = Vector2.new(x, y)
+	if vector.Magnitude > 1 then
+		vector = vector.Unit
+	end
+	return vector
+end
+
+local inputByKey = {
+	[Enum.KeyCode.W] = "Forward",
+	[Enum.KeyCode.S] = "Backward",
+	[Enum.KeyCode.A] = "Left",
+	[Enum.KeyCode.D] = "Right",
+}
+
+local function onMoveAction(_, inputStateValue, inputObject)
+	local direction = inputByKey[inputObject.KeyCode]
+	if direction then
+		inputState[direction] = inputStateValue == Enum.UserInputState.Begin or inputStateValue == Enum.UserInputState.Change
+	end
+	return Enum.ContextActionResult.Sink
+end
+
+local function clearInput()
+	for direction in inputState do
+		inputState[direction] = false
+	end
+end
+
+local function bindMovement()
+	if moveBound then
+		return
+	end
+	moveBound = true
+	ContextActionService:BindActionAtPriority(
+		MOVE_ACTION,
+		onMoveAction,
+		false,
+		ACTION_PRIORITY,
+		Enum.KeyCode.W,
+		Enum.KeyCode.A,
+		Enum.KeyCode.S,
+		Enum.KeyCode.D
+	)
+end
+
+local function unbindMovement()
+	if not moveBound then
+		return
+	end
+	moveBound = false
+	ContextActionService:UnbindAction(MOVE_ACTION)
+	clearInput()
+end
+
+local function getClimbAnimation()
+	local animate = character:FindFirstChild("Animate")
+	local climb = animate and animate:FindFirstChild("climb")
+	local configured = climb and climb:FindFirstChildWhichIsA("Animation")
+	if configured and configured.AnimationId ~= "" then
+		return configured
+	end
+
+	local fallback = Instance.new("Animation")
+	fallback.Name = "SpiderClimbAnimation"
+	fallback.AnimationId = humanoid.RigType == Enum.HumanoidRigType.R6
+		and "rbxassetid://180436334"
+		or "rbxassetid://507765644"
+	fallback.Parent = character
+	return fallback
+end
+
+local function ensureAnimation()
+	if climbTrack then
+		return climbTrack
+	end
+	local success, track = pcall(function()
+		return animator:LoadAnimation(getClimbAnimation())
+	end)
+	if success then
+		climbTrack = track
+		climbTrack.Looped = true
+		climbTrack.Priority = Enum.AnimationPriority.Action
+	end
+	return climbTrack
+end
+
+local function setAnimationSpeed(speed)
+	local track = ensureAnimation()
+	if not track then
+		return
+	end
+	if not track.IsPlaying then
+		track:Play(0.18, 1, speed)
+		lastAnimationSpeed = speed
+	elseif math.abs(lastAnimationSpeed - speed) > 0.04 then
+		track:AdjustSpeed(speed)
+		lastAnimationSpeed = speed
+	end
+end
+
+local function stopAnimation()
+	if climbTrack and climbTrack.IsPlaying then
+		climbTrack:Stop(0.18)
+	end
+	lastAnimationSpeed = -1
+end
+
+local function createConstraints()
+	if attachment then
+		return
+	end
+
+	attachment = Instance.new("Attachment")
+	attachment.Name = "SpiderClimbAttachment"
+	attachment.Parent = rootPart
+
+	alignPosition = Instance.new("AlignPosition")
+	alignPosition.Name = "SpiderClimbPosition"
+	alignPosition.Mode = Enum.PositionAlignmentMode.OneAttachment
+	alignPosition.Attachment0 = attachment
+	alignPosition.ApplyAtCenterOfMass = true
+	alignPosition.MaxForce = 500000
+	alignPosition.MaxVelocity = CLIMB_SPEED * 2.5
+	alignPosition.Responsiveness = POSITION_RESPONSE
+	alignPosition.RigidityEnabled = false
+	alignPosition.Enabled = false
+	alignPosition.Parent = rootPart
+
+	alignOrientation = Instance.new("AlignOrientation")
+	alignOrientation.Name = "SpiderClimbOrientation"
+	alignOrientation.Mode = Enum.OrientationAlignmentMode.OneAttachment
+	alignOrientation.Attachment0 = attachment
+	alignOrientation.MaxTorque = 500000
+	alignOrientation.MaxAngularVelocity = 40
+	alignOrientation.Responsiveness = ORIENTATION_RESPONSE
+	alignOrientation.RigidityEnabled = false
+	alignOrientation.Enabled = false
+	alignOrientation.Parent = rootPart
+end
+
+local function disableCharacterCollisions()
+	table.clear(savedPartCollisions)
+	for _, descendant in character:GetDescendants() do
+		if descendant:IsA("BasePart") then
+			savedPartCollisions[descendant] = descendant.CanCollide
+			descendant.CanCollide = false
+		end
+	end
+	if collisionConnection then
+		collisionConnection:Disconnect()
+	end
+	collisionConnection = character.DescendantAdded:Connect(function(descendant)
+		if descendant:IsA("BasePart") and savedPartCollisions[descendant] == nil then
+			savedPartCollisions[descendant] = descendant.CanCollide
+			descendant.CanCollide = false
+		end
+	end)
+end
+
+local function maintainCharacterCollisions()
+	for part in savedPartCollisions do
+		if part.Parent and part.CanCollide then
+			part.CanCollide = false
+		end
+	end
+end
+
+local function restoreCharacterCollisions()
+	if collisionConnection then
+		collisionConnection:Disconnect()
+		collisionConnection = nil
+	end
+	for part, canCollide in savedPartCollisions do
+		if part.Parent then
+			part.CanCollide = canCollide
+		end
+	end
+	table.clear(savedPartCollisions)
+end
+
+local function setSurface(result, up, surfacePoint)
+	surfaceNormal = result.Normal.Unit
+	local projectedUp = projectOntoPlane(up, surfaceNormal)
+	if projectedUp.Magnitude < 0.1 then
+		local _, fallbackUp = getSurfaceBasis(surfaceNormal, currentUp)
+		projectedUp = fallbackUp
+	end
+	surfaceUp = projectedUp.Unit
+	targetSurfacePoint = surfacePoint or result.Position
+	currentSurfacePart = result.Instance:IsA("BasePart") and result.Instance or nil
+	if currentSurfacePart then
+		currentSurfaceLocalPoint = currentSurfacePart.CFrame:PointToObjectSpace(targetSurfacePoint)
+		currentSurfaceLocalNormal = currentSurfacePart.CFrame:VectorToObjectSpace(surfaceNormal)
+		currentSurfaceLocalUp = currentSurfacePart.CFrame:VectorToObjectSpace(surfaceUp)
+	else
+		currentSurfaceLocalPoint = nil
+		currentSurfaceLocalNormal = nil
+		currentSurfaceLocalUp = nil
+	end
+end
+
+local function setStoredSurfaceUp(up)
+	local projectedUp = projectOntoPlane(up, surfaceNormal)
+	if projectedUp.Magnitude < 0.1 then
+		return
+	end
+	surfaceUp = projectedUp.Unit
+	if currentSurfacePart then
+		currentSurfaceLocalUp = currentSurfacePart.CFrame:VectorToObjectSpace(surfaceUp)
+	end
+end
+
+local function refreshMovingSurface()
+	if not currentSurfacePart or not currentSurfacePart.Parent then
+		return
+	end
+	targetSurfacePoint = currentSurfacePart.CFrame:PointToWorldSpace(currentSurfaceLocalPoint)
+	surfaceNormal = currentSurfacePart.CFrame:VectorToWorldSpace(currentSurfaceLocalNormal).Unit
+	surfaceUp = currentSurfacePart.CFrame:VectorToWorldSpace(currentSurfaceLocalUp).Unit
+end
+
+local function detach()
+	if not attached then
+		return
+	end
+
+	attached = false
+	cameraRotationOffset = 0
+	transitioning = false
+	transitionProgress = 0
+	transitionStartFrame = nil
+	transitionEndFrame = nil
+	transitionStartPosition = nil
+	transitionControlPosition1 = nil
+	transitionControlPosition2 = nil
+	transitionEndPosition = nil
+	currentOffset = WALL_OFFSET
+	currentSurfacePart = nil
+	currentSurfaceLocalPoint = nil
+	currentSurfaceLocalNormal = nil
+	currentSurfaceLocalUp = nil
+	targetSurfacePoint = nil
+	character:SetAttribute("IsWallClimbing", false)
+	unbindMovement()
+
+	if alignPosition then
+		alignPosition.Enabled = false
+	end
+	if alignOrientation then
+		alignOrientation.Enabled = false
+	end
+	restoreCharacterCollisions()
+
+	humanoid.AutoRotate = savedAutoRotate
+	humanoid.PlatformStand = savedPlatformStand
+	local velocity = rootPart.AssemblyLinearVelocity
+	rootPart.AssemblyLinearVelocity = Vector3.new(velocity.X, math.min(velocity.Y, 0), velocity.Z)
+	if humanoid.Health > 0 then
+		humanoid:ChangeState(Enum.HumanoidStateType.Freefall)
+	end
+end
+
+local function attach(result)
+	if attached or not isClimbable(result) then
+		return
+	end
+
+	local right, up = getSurfaceBasis(result.Normal, Vector3.yAxis)
+	if not right then
+		return
+	end
+
+	createConstraints()
+	savedAutoRotate = humanoid.AutoRotate
+	savedPlatformStand = humanoid.PlatformStand
+	disableCharacterCollisions()
+	currentNormal = result.Normal.Unit
+	currentUp = up
+	currentOffset = WALL_OFFSET
+	setSurface(result, up)
+	lastSurfaceTime = os.clock()
+	transitioning = false
+	transitionProgress = 0
+	attached = true
+	character:SetAttribute("IsWallClimbing", true)
+	bindMovement()
+
+	humanoid.AutoRotate = false
+	humanoid.PlatformStand = true
+	rootPart.AssemblyLinearVelocity = Vector3.zero
+	rootPart.AssemblyAngularVelocity = Vector3.zero
+
+	alignPosition.Position = targetSurfacePoint + currentNormal * WALL_OFFSET
+	alignOrientation.CFrame = CFrame.fromMatrix(Vector3.zero, right, up, currentNormal)
+	alignPosition.Enabled = true
+	alignOrientation.Enabled = true
+end
+
+local function setMode(enabled)
+	if destroyed or humanoid.Health <= 0 or modeEnabled == enabled then
+		return
+	end
+
+	modeEnabled = enabled
+	character:SetAttribute("ClimbModeEnabled", enabled)
+
+	if enabled then
+		setAnimationSpeed(0.55)
+		local supportingSurface = findSupportingSurface()
+		if supportingSurface then
+			attach(supportingSurface)
+		end
+	else
+		detach()
+		stopAnimation()
+	end
+end
+
+local function onToggleAction(_, inputStateValue)
+	if inputStateValue ~= Enum.UserInputState.Begin then
+		return Enum.ContextActionResult.Sink
+	end
+	if UserInputService:GetFocusedTextBox() then
+		return Enum.ContextActionResult.Pass
+	end
+	setMode(not modeEnabled)
+	return Enum.ContextActionResult.Sink
+end
+
+local function onClimbJumpAction(_, inputStateValue)
+	if inputStateValue ~= Enum.UserInputState.Begin then
+		return attached and Enum.ContextActionResult.Sink or Enum.ContextActionResult.Pass
+	end
+	if UserInputService:GetFocusedTextBox() or not attached then
+		return Enum.ContextActionResult.Pass
+	end
+	local frame = rootPart.CFrame
+	local backward = frame:VectorToWorldSpace(Vector3.zAxis).Unit
+	local upward = frame:VectorToWorldSpace(Vector3.yAxis).Unit
+	setMode(false)
+	rootPart.AssemblyLinearVelocity = (backward * CLIMB_JUMP_BACKWARD_SPEED
+		+ upward * CLIMB_JUMP_UPWARD_SPEED) * CLIMB_JUMP_FORCE_MULTIPLIER
+	rootPart.AssemblyAngularVelocity = Vector3.zero
+	if humanoid.Health > 0 then
+		humanoid:ChangeState(Enum.HumanoidStateType.Freefall)
+	end
+	return Enum.ContextActionResult.Sink
+end
+
+local function setCameraRotationMode(enabled)
+	if cameraRotationEnabled == enabled then
+		return
+	end
+	cameraRotationEnabled = enabled
+	cameraRotationOffset = 0
+	character:SetAttribute("CameraClimbRotationEnabled", enabled)
+
+	if not attached then
+		return
+	end
+
+	if enabled then
+		local cameraUp = getCameraDesiredUp(surfaceNormal)
+		if cameraUp then
+			setStoredSurfaceUp(cameraUp)
+		end
+	else
+		setStoredSurfaceUp(currentUp)
+	end
+end
+
+local function onCameraToggleAction(_, inputStateValue)
+	if inputStateValue ~= Enum.UserInputState.Begin then
+		return Enum.ContextActionResult.Sink
+	end
+	if UserInputService:GetFocusedTextBox() then
+		return Enum.ContextActionResult.Pass
+	end
+	setCameraRotationMode(not cameraRotationEnabled)
+	return Enum.ContextActionResult.Sink
+end
+
+local function cubicBezier(point0, point1, point2, point3, alpha)
+	local a = point0:Lerp(point1, alpha)
+	local b = point1:Lerp(point2, alpha)
+	local c = point2:Lerp(point3, alpha)
+	return a:Lerp(b, alpha):Lerp(b:Lerp(c, alpha), alpha)
+end
+
+local function beginCornerTransition(result, input, oldSurfaceNormal)
+	local startNormal = currentNormal
+	local startUp = currentUp
+	local startRight = startUp:Cross(startNormal).Unit
+	local moveDirection = startRight * input.X + startUp * input.Y
+	local newSurfaceNormal = result.Normal.Unit
+	local isConcave = moveDirection.Magnitude > 0.05 and newSurfaceNormal:Dot(moveDirection.Unit) < -0.45
+	local newSurfaceUp = transportSurfaceUp(startNormal, newSurfaceNormal, startUp)
+
+	if cameraRotationEnabled then
+		local cameraUp = getCameraSurfaceUp(newSurfaceNormal)
+		if cameraUp then
+			cameraRotationOffset = getSignedSurfaceAngle(cameraUp, newSurfaceUp, newSurfaceNormal)
+		end
+	end
+
+	local oldSurfacePoint = targetSurfacePoint
+	local correctionLimit = CORNER_OFFSET + 1.5
+	local planeCorrection = math.clamp(
+		(oldSurfacePoint - result.Position):Dot(oldSurfaceNormal),
+		-correctionLimit,
+		correctionLimit
+	)
+	local edgePoint = result.Position + oldSurfaceNormal * planeCorrection
+	edgePoint -= newSurfaceNormal * (edgePoint - result.Position):Dot(newSurfaceNormal)
+
+	local landingPoint
+	if isConcave then
+		landingPoint = edgePoint + oldSurfaceNormal * CORNER_LANDING_DISTANCE
+	else
+		landingPoint = result.Position - oldSurfaceNormal * CONVEX_LANDING_DISTANCE
+	end
+	landingPoint -= newSurfaceNormal * (landingPoint - result.Position):Dot(newSurfaceNormal)
+
+	transitionStartFrame = CFrame.fromMatrix(Vector3.zero, startRight, startUp, startNormal)
+	transitionStartPosition = alignPosition.Position
+	setSurface(result, newSurfaceUp, landingPoint)
+	local endRight = surfaceUp:Cross(surfaceNormal).Unit
+	transitionEndFrame = CFrame.fromMatrix(Vector3.zero, endRight, surfaceUp, surfaceNormal)
+	transitionEndPosition = targetSurfacePoint + surfaceNormal * WALL_OFFSET
+
+	local clearancePoint
+	if isConcave then
+		clearancePoint = edgePoint + startNormal * CORNER_OFFSET + newSurfaceNormal * CORNER_OFFSET
+	else
+		local cornerDirection = startNormal + newSurfaceNormal
+		if cornerDirection.Magnitude < 0.1 then
+			cornerDirection = startNormal
+		end
+		clearancePoint = edgePoint + cornerDirection.Unit * CORNER_OFFSET
+	end
+	transitionControlPosition1 = transitionStartPosition:Lerp(clearancePoint, 0.72)
+	transitionControlPosition2 = transitionEndPosition:Lerp(clearancePoint, 0.72)
+	transitionProgress = 0
+	transitioning = true
+end
+
+local function updateCornerTransition(deltaTime)
+	if currentSurfacePart and not currentSurfacePart.Parent then
+		detach()
+		return
+	end
+
+	transitionProgress = math.min(1, transitionProgress + deltaTime * CORNER_TRANSITION_RATE)
+	local easedProgress = transitionProgress * transitionProgress * (3 - 2 * transitionProgress)
+	local frame = transitionStartFrame:Lerp(transitionEndFrame, easedProgress)
+	currentNormal = -frame.LookVector
+	currentUp = frame.UpVector
+	local right = frame.RightVector
+
+	alignPosition.Position = cubicBezier(
+		transitionStartPosition,
+		transitionControlPosition1,
+		transitionControlPosition2,
+		transitionEndPosition,
+		easedProgress
+	)
+	alignOrientation.CFrame = frame
+	rootPart.AssemblyAngularVelocity = Vector3.zero
+	setAnimationSpeed(0.85)
+
+	if transitionProgress >= 1 then
+		transitioning = false
+		currentNormal = surfaceNormal
+		currentUp = surfaceUp
+		currentOffset = WALL_OFFSET
+		local endRight = currentUp:Cross(currentNormal).Unit
+		alignPosition.Position = transitionEndPosition
+		alignOrientation.CFrame = CFrame.fromMatrix(Vector3.zero, endRight, currentUp, currentNormal)
+	end
+end
+
+local function updateAttached(deltaTime)
+	maintainCharacterCollisions()
+	if transitioning then
+		updateCornerTransition(deltaTime)
+		return
+	end
+
+	refreshMovingSurface()
+
+	local projectedCurrentUp = projectOntoPlane(currentUp, currentNormal)
+	if projectedCurrentUp.Magnitude < 0.1 then
+		local _, fallbackUp = getSurfaceBasis(currentNormal, surfaceUp)
+		projectedCurrentUp = fallbackUp
+	end
+	currentUp = projectedCurrentUp.Unit
+	local right = currentUp:Cross(currentNormal).Unit
+
+	local input = getInputVector()
+	local moveDirection = right * input.X + currentUp * input.Y
+	local intendedSurfacePoint = targetSurfacePoint + moveDirection * CLIMB_SPEED * deltaTime
+	local rootSurfacePoint = rootPart.Position - currentNormal * currentOffset
+	local targetLead = projectOntoPlane(intendedSurfacePoint - rootSurfacePoint, currentNormal)
+	if targetLead.Magnitude > MAX_TARGET_LEAD then
+		intendedSurfacePoint -= targetLead - targetLead.Unit * MAX_TARGET_LEAD
+	end
+	local result = findCurrentSurface(intendedSurfacePoint, surfaceNormal)
+	if result and moveDirection.Magnitude > 0.05 then
+		cornerDetectionAccumulator += deltaTime
+		if cornerDetectionAccumulator >= DETECTION_INTERVAL then
+			cornerDetectionAccumulator %= DETECTION_INTERVAL
+			local concave = findConcaveSurface(
+				intendedSurfacePoint,
+				surfaceNormal,
+				moveDirection,
+				CONCAVE_TRIGGER_DISTANCE
+			)
+			if concave then
+				result = concave
+			end
+		end
+	else
+		cornerDetectionAccumulator = DETECTION_INTERVAL
+	end
+
+	if not result then
+		result = findCornerSurface(intendedSurfacePoint, surfaceNormal, moveDirection)
+	end
+
+	if not result then
+		if os.clock() - lastSurfaceTime > LOST_SURFACE_GRACE then
+			detach()
+		end
+		setAnimationSpeed(input.Magnitude > 0.05 and 0.65 or 0)
+		return
+	end
+
+	lastSurfaceTime = os.clock()
+	local oldSurfaceNormal = surfaceNormal
+	local newSurfaceNormal = result.Normal.Unit
+
+	if newSurfaceNormal:Dot(oldSurfaceNormal) < SURFACE_CHANGE_THRESHOLD then
+		beginCornerTransition(result, input, oldSurfaceNormal)
+		updateCornerTransition(deltaTime)
+		return
+	end
+
+	local transportedUp = projectOntoPlane(surfaceUp, newSurfaceNormal)
+	if transportedUp.Magnitude < 0.1 then
+		local _, fallbackUp = getSurfaceBasis(newSurfaceNormal, currentUp)
+		transportedUp = fallbackUp
+	end
+	local desiredSurfaceUp = transportedUp.Unit
+	if cameraRotationEnabled then
+		local cameraUp = getCameraDesiredUp(newSurfaceNormal)
+		if cameraUp then
+			desiredSurfaceUp = cameraUp
+		end
+	end
+	setSurface(result, desiredSurfaceUp)
+
+	local alpha = math.clamp(deltaTime * NORMAL_RESPONSE, 0, 1)
+	local blendedNormal = currentNormal:Lerp(surfaceNormal, alpha)
+	if blendedNormal.Magnitude > 0.1 then
+		currentNormal = blendedNormal.Unit
+	end
+
+	local desiredCurrentUp = projectOntoPlane(surfaceUp, currentNormal)
+	if desiredCurrentUp.Magnitude < 0.1 then
+		local _, fallbackUp = getSurfaceBasis(currentNormal, currentUp)
+		desiredCurrentUp = fallbackUp
+	end
+	if cameraRotationEnabled then
+		currentUp = rotateUpToward(
+			currentUp,
+			desiredCurrentUp.Unit,
+			currentNormal,
+			deltaTime * CAMERA_ROTATION_SPEED
+		)
+	else
+		local blendedUp = currentUp:Lerp(desiredCurrentUp.Unit, alpha)
+		blendedUp = projectOntoPlane(blendedUp, currentNormal)
+		if blendedUp.Magnitude < 0.1 then
+			local _, fallbackUp = getSurfaceBasis(currentNormal, surfaceUp)
+			blendedUp = fallbackUp
+		end
+		currentUp = blendedUp.Unit
+	end
+	right = currentUp:Cross(currentNormal).Unit
+
+	alignPosition.Position = targetSurfacePoint + currentNormal * currentOffset
+	alignOrientation.CFrame = CFrame.fromMatrix(Vector3.zero, right, currentUp, currentNormal)
+	rootPart.AssemblyAngularVelocity = Vector3.zero
+
+	if input.Magnitude > 0.05 then
+		setAnimationSpeed(math.clamp(CLIMB_SPEED / 16, 0.65, 1.5))
+	else
+		setAnimationSpeed(0)
+	end
+end
+
+local function updateDetached(deltaTime)
+	setAnimationSpeed(humanoid.MoveDirection.Magnitude > 0.05 and 0.7 or 0.25)
+	detectionAccumulator += deltaTime
+	if detectionAccumulator < DETECTION_INTERVAL then
+		return
+	end
+	detectionAccumulator %= DETECTION_INTERVAL
+	local wall = findWallAhead()
+	if wall then
+		attach(wall)
+	end
+end
+
+character:SetAttribute("ClimbModeEnabled", false)
+character:SetAttribute("IsWallClimbing", false)
+character:SetAttribute("CameraClimbRotationEnabled", false)
+
+ContextActionService:BindActionAtPriority(
+	TOGGLE_ACTION,
+	onToggleAction,
+	false,
+	ACTION_PRIORITY,
+	CLIMB_KEY
+)
+
+ContextActionService:BindActionAtPriority(
+	CAMERA_TOGGLE_ACTION,
+	onCameraToggleAction,
+	false,
+	ACTION_PRIORITY,
+	CAMERA_TOGGLE_KEY
+)
+
+ContextActionService:BindActionAtPriority(
+	JUMP_ACTION,
+	onClimbJumpAction,
+	false,
+	ACTION_PRIORITY + 1,
+	Enum.KeyCode.Space
+)
+
+UserInputService.WindowFocusReleased:Connect(clearInput)
+
+humanoid.Died:Connect(function()
+	setMode(false)
+end)
+
+RunService.Heartbeat:Connect(function(deltaTime)
+	if destroyed or not modeEnabled or humanoid.Health <= 0 then
+		return
+	end
+	if attached then
+		updateAttached(math.min(deltaTime, 1 / 20))
+	else
+		updateDetached(deltaTime)
+	end
+end)
+
+character.Destroying:Connect(function()
+	destroyed = true
+	detach()
+	stopAnimation()
+	ContextActionService:UnbindAction(TOGGLE_ACTION)
+	ContextActionService:UnbindAction(CAMERA_TOGGLE_ACTION)
+	ContextActionService:UnbindAction(JUMP_ACTION)
+	ContextActionService:UnbindAction(MOVE_ACTION)
+end)
+
+local Players = game:GetService("Players")
+local ContextActionService = game:GetService("ContextActionService")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+
+local player = Players.LocalPlayer
+local character = player.Character
+local humanoid = character:WaitForChild("Humanoid")
+local rootPart = character:WaitForChild("HumanoidRootPart")
+local animator = humanoid:FindFirstChildOfClass("Animator") or humanoid:WaitForChild("Animator")
+local swingController = character:FindFirstChild("SpiderSwingController")
+local backflipAnimation = Instance.new('Animation'); backflipAnimation.AnimationId = 'rbxassetid://74012998347103'
+local SUPER_JUMP_KEY = Enum.KeyCode.T
+local SUPER_JUMP_CHARGE_TIME = 2
+local SUPER_JUMP_MIN_UPWARD_SPEED = 46
+local SUPER_JUMP_MAX_UPWARD_SPEED = 320
+local SUPER_JUMP_CHARGE_POWER = 2.2
+local SUPER_JUMP_FORWARD_SPEED = 26
+local SUPER_JUMP_EFFECT_DURATION = 0.8
+
+local SLINGSHOT_KEY = Enum.KeyCode.Y
+local SLINGSHOT_CHARGE_TIME = 1.5
+local SLINGSHOT_MIN_SPEED = 15
+local SLINGSHOT_MAX_SPEED = 240
+local SLINGSHOT_MIN_UPWARD_SPEED = 0
+local SLINGSHOT_MAX_UPWARD_SPEED = 72
+local SLINGSHOT_CHARGE_POWER = 2.8
+local SLINGSHOT_UPWARD_BIAS = 0.08
+local SLINGSHOT_MAX_UPWARD_DIRECTION = 0.65
+local SLINGSHOT_FULL_SPEED_DISTANCE = 150
+local SLINGSHOT_DECELERATION = 2.2
+local SLINGSHOT_END_SPEED = 42
+local SLINGSHOT_MAX_DURATION = 5
+
+local CHARGE_FOV_BONUS = 10
+local SUPER_JUMP_FOV_BONUS = 14
+local SLINGSHOT_FOV_BONUS = 18
+local FOV_RESPONSE = 9
+local CHARGE_SHAKE_MAX = 0.45
+local SUPER_JUMP_SHAKE_MAX = 0.65
+local SLINGSHOT_SHAKE_MAX = 1
+local SHAKE_MAX_POSITION = 0.16
+local SHAKE_MAX_ROTATION = math.rad(0.7)
+local SHAKE_FREQUENCY = 22
+local SHAKE_RESPONSE = 10
+
+local BACKFLIP_MIN_UPWARD_SPEED = 8
+local BACKFLIP_FADE_TIME = 0.12
+local ACTION_PRIORITY = 3100
+
+local SUPER_JUMP_ACTION = "SpiderSuperJump_" .. player.UserId
+local SLINGSHOT_ACTION = "SpiderSlingshot_" .. player.UserId
+local CHARGE_MOVEMENT_ACTION = "SpiderChargeMovement_" .. player.UserId
+local CAMERA_PRE_ACTION = "SpiderTraversalCameraPre_" .. player.UserId
+local CAMERA_POST_ACTION = "SpiderTraversalCameraPost_" .. player.UserId
+
+local destroyed = false
+local chargeKind
+local chargeStartedAt = 0
+local savedChargeWalkSpeed
+local slingshotActive = false
+local slingshotDirection = Vector3.zAxis
+local slingshotStartPosition = Vector3.zero
+local slingshotStartedAt = 0
+local slingshotSlowdownStarted = false
+local slingshotLaunchSpeed = 0
+local superJumpEffectStartedAt = 0
+local superJumpEffectEndAt = 0
+local currentFovBonus = 0
+local appliedFovBonus = 0
+local appliedFovCamera
+local currentShakeIntensity = 0
+local previousWebSwinging = character:GetAttribute("IsWebSwinging") == true
+local backflipTrack
+local loadedBackflipId
+local heartbeatConnection
+local webSwingConnection
+local diedConnection
+
+local AnimCD = false
+
+game:GetService('UserInputService').InputBegan:Connect(function(Input, IsTyping)
+    if IsTyping or AnimCD == true or character == nil or character:GetAttribute("IsWebSwinging") == true or character:GetAttribute("IsWebZipping") == true or not character:FindFirstChild('Humanoid') or character:FindFirstChild('Humanoid'):GetState() ~= Enum.HumanoidStateType.Freefall then return end
+
+    if character:GetAttribute("IsWallClimbing") == true or character:GetAttribute("ClimbModeEnabled") == true or character:GetAttribute('IsBackflip') then
+		return
+	end
+
+    if Input.KeyCode == Enum.KeyCode.Z then
+        AnimCD = true
+        local Anim = Instance.new('Animation')
+        Anim.AnimationId = 'rbxassetid://122491766816154'
+
+        local Track123 = player.Character.Humanoid:LoadAnimation(Anim)
+        Track123.Priority = Enum.AnimationPriority.Action4
+        Track123:Play()
+
+        local repeating = true
+
+        task.spawn(function()
+            while repeating == true do
+                if character:GetAttribute("IsWebSwinging") == true or character:GetAttribute("IsWebZipping") == true or character:GetAttribute("ClimbModeEnabled") == true then
+                    Track123:Stop()
+                    return
+                end
+                task.wait()
+            end
+            return
+        end)
+
+		task.delay(1, function()
+            repeating = false
+			Track123:Stop()
+            AnimCD = false
+            Track123:Destroy()
+		end)
+    elseif Input.KeyCode == Enum.KeyCode.X then
+        AnimCD = true
+        local Anim = Instance.new('Animation')
+        Anim.AnimationId = 'rbxassetid://131057503397598'
+
+        local TrackABC = player.Character.Humanoid:LoadAnimation(Anim)
+        TrackABC.Priority = Enum.AnimationPriority.Action4
+        TrackABC:Play()
+
+        local repeating = true
+
+        task.spawn(function()
+            while repeating == true do
+                if character:GetAttribute("IsWebSwinging") == true or character:GetAttribute("IsWebZipping") == true or character:GetAttribute("ClimbModeEnabled") == true then
+                    TrackABC:Stop()
+                    return
+                end
+                task.wait()
+            end
+            return
+        end)
+
+		task.delay(1.3, function()
+			TrackABC:Stop()
+            AnimCD = false
+            TrackABC:Destroy()
+		end)
+    end
+end)
+
+local function smoothStep(value)
+	value = math.clamp(value, 0, 1)
+	return value * value * (3 - 2 * value)
+end
+
+local function lerpNumber(a, b, alpha)
+	return a + (b - a) * alpha
+end
+
+local function isTraversalBusy()
+	return character:GetAttribute("ClimbModeEnabled") == true
+		or character:GetAttribute("IsWallClimbing") == true
+		or character:GetAttribute("IsWebSwinging") == true
+		or character:GetAttribute("IsWebZipping") == true
+end
+
+local function canStartSkill(needsGround)
+	if destroyed or humanoid.Health <= 0 or humanoid.Sit or chargeKind or slingshotActive then
+		return false
+	end
+	if UserInputService:GetFocusedTextBox() or isTraversalBusy() then
+		return false
+	end
+	if needsGround and humanoid.FloorMaterial == Enum.Material.Air then
+		return false
+	end
+	return true
+end
+
+local function getHorizontalForward()
+	local camera = workspace.CurrentCamera
+	local forward = camera and camera.CFrame.LookVector or rootPart.CFrame.LookVector
+	forward = Vector3.new(forward.X, 0, forward.Z)
+	if forward.Magnitude < 0.01 then
+		forward = Vector3.new(rootPart.CFrame.LookVector.X, 0, rootPart.CFrame.LookVector.Z)
+	end
+	return forward.Magnitude > 0.01 and forward.Unit or Vector3.zAxis
+end
+
+local function getSlingshotDirection()
+	local camera = workspace.CurrentCamera
+	local look = --[[camera and camera.CFrame.LookVector or ]]rootPart.CFrame.LookVector
+	local horizontal = Vector3.new(look.X, 0, look.Z)
+	if horizontal.Magnitude < 0.01 then
+		horizontal = getHorizontalForward()
+	else
+		horizontal = horizontal.Unit
+	end
+	local vertical = math.clamp(look.Y, SLINGSHOT_UPWARD_BIAS, SLINGSHOT_MAX_UPWARD_DIRECTION)
+	return Vector3.new(horizontal.X, vertical, horizontal.Z).Unit
+end
+
+local function onChargeMovementAction()
+	return Enum.ContextActionResult.Sink
+end
+
+local function setChargeMovementLocked(locked)
+	if locked then
+		ContextActionService:BindActionAtPriority(
+			CHARGE_MOVEMENT_ACTION,
+			onChargeMovementAction,
+			false,
+			ACTION_PRIORITY + 1,
+			Enum.KeyCode.W,
+			Enum.KeyCode.A,
+			Enum.KeyCode.S,
+			Enum.KeyCode.D,
+			Enum.KeyCode.Up,
+			Enum.KeyCode.Down,
+			Enum.KeyCode.Left,
+			Enum.KeyCode.Right,
+			Enum.KeyCode.Space,
+			Enum.KeyCode.Thumbstick1
+		)
+	else
+		ContextActionService:UnbindAction(CHARGE_MOVEMENT_ACTION)
+	end
+end
+
+local function clearCharge()
+	setChargeMovementLocked(false)
+	if savedChargeWalkSpeed ~= nil then
+		humanoid.WalkSpeed = savedChargeWalkSpeed
+		savedChargeWalkSpeed = nil
+	end
+	chargeKind = nil
+	chargeStartedAt = 0
+	character:SetAttribute("IsSuperJumpCharging", false)
+	character:SetAttribute("IsSlingshotCharging", false)
+end
+
+local function stopSlingshot()
+	slingshotActive = false
+	slingshotSlowdownStarted = false
+	slingshotLaunchSpeed = 0
+	character:SetAttribute("IsSlingshotTraveling", false)
+end
+
+local function getChargeAlpha(now)
+	if chargeKind == "SuperJump" then
+		return math.clamp((now - chargeStartedAt) / SUPER_JUMP_CHARGE_TIME, 0, 1)
+	elseif chargeKind == "Slingshot" then
+		return math.clamp((now - chargeStartedAt) / SLINGSHOT_CHARGE_TIME, 0, 1)
+	end
+	return 0
+end
+
+local function beginCharge(kind)
+	clearCharge()
+	chargeKind = kind
+	chargeStartedAt = os.clock()
+	savedChargeWalkSpeed = humanoid.WalkSpeed
+	humanoid.WalkSpeed = 0
+	character:SetAttribute("IsSuperJumpCharging", kind == "SuperJump")
+	character:SetAttribute("IsSlingshotCharging", kind == "Slingshot")
+	setChargeMovementLocked(true)
+	humanoid:Move(Vector3.zero, false)
+
+    local SuperJumpAnimation = Instance.new('Animation')
+    SuperJumpAnimation.AnimationId = 'rbxassetid://108141241434119'
+
+    local SlingshotAnimation = Instance.new('Animation')
+    SlingshotAnimation.AnimationId = 'rbxassetid://89111716130280'
+
+    local Track1 = character.Humanoid:LoadAnimation(SuperJumpAnimation)
+    Track1.Priority = Enum.AnimationPriority.Action4
+
+    local Track2 = character.Humanoid:LoadAnimation(SlingshotAnimation)
+    Track2.Priority = Enum.AnimationPriority.Action4
+
+    if kind == 'SuperJump' then 
+        Track1:Play()
+        task.spawn(function()
+            repeat task.wait() until character == nil or character:GetAttribute("IsSuperJumpCharging") == false or character:GetAttribute("IsSuperJumpCharging") == nil
+
+            Track1:Stop()
+
+            return
+        end)
+    else
+        Track2:Play()
+
+        task.spawn(function()
+            repeat task.wait() until character == nil or character:GetAttribute("IsSlingshotCharging") == false or character:GetAttribute("IsSlingshotCharging") == nil
+
+            Track2:Stop()
+
+            return
+        end)
+    end
+end
+
+local function launchSuperJump(chargeAlpha)
+	local easedCharge = smoothStep(chargeAlpha) ^ SUPER_JUMP_CHARGE_POWER
+	local upwardSpeed = lerpNumber(SUPER_JUMP_MIN_UPWARD_SPEED, SUPER_JUMP_MAX_UPWARD_SPEED, easedCharge)
+	local velocity = rootPart.AssemblyLinearVelocity
+	local forwardBoost = getHorizontalForward() * SUPER_JUMP_FORWARD_SPEED * easedCharge
+	humanoid:ChangeState(Enum.HumanoidStateType.Freefall)
+	rootPart.AssemblyLinearVelocity = velocity
+		+ Vector3.yAxis * (math.max(velocity.Y, upwardSpeed) - velocity.Y)
+		+ forwardBoost
+	superJumpEffectStartedAt = os.clock()
+	superJumpEffectEndAt = superJumpEffectStartedAt + SUPER_JUMP_EFFECT_DURATION
+
+    local S = Instance.new('Sound', character.Head); S.SoundId = 'rbxassetid://79597801618302'; S.RollOffMaxDistance = 500; S.Volume = 1; S:Play(); game:GetService('Debris'):AddItem(S, 5)
+end
+
+local function launchSlingshot(chargeAlpha)
+	local easedCharge = smoothStep(chargeAlpha) ^ SLINGSHOT_CHARGE_POWER
+	local targetSpeed = lerpNumber(SLINGSHOT_MIN_SPEED, SLINGSHOT_MAX_SPEED, easedCharge)
+	local direction = getSlingshotDirection()
+	local velocity = rootPart.AssemblyLinearVelocity
+	local speedAlongDirection = velocity:Dot(direction)
+	local launchVelocity = velocity + direction * math.max(0, targetSpeed - speedAlongDirection)
+	local upwardSpeed = lerpNumber(SLINGSHOT_MIN_UPWARD_SPEED, SLINGSHOT_MAX_UPWARD_SPEED, easedCharge)
+	if launchVelocity.Y < upwardSpeed then
+		launchVelocity += Vector3.yAxis * (upwardSpeed - launchVelocity.Y)
+	end
+	humanoid:ChangeState(Enum.HumanoidStateType.Freefall)
+	rootPart.AssemblyLinearVelocity = launchVelocity
+	slingshotActive = true
+	slingshotDirection = direction
+	slingshotStartPosition = rootPart.Position
+	slingshotStartedAt = os.clock()
+	slingshotSlowdownStarted = false
+	slingshotLaunchSpeed = math.max(targetSpeed, rootPart.AssemblyLinearVelocity:Dot(direction))
+	character:SetAttribute("IsSlingshotTraveling", true)
+    
+    local S = Instance.new('Sound', character.Head); S.SoundId = 'rbxassetid://79597801618302'; S.RollOffMaxDistance = 500; S.Volume = 1; S:Play(); game:GetService('Debris'):AddItem(S, 5)
+end
+
+local function releaseCharge(kind)
+	if chargeKind ~= kind then
+		return false
+	end
+	local chargeAlpha = getChargeAlpha(os.clock())
+	clearCharge()
+    print(chargeAlpha)
+	if kind == "SuperJump" then
+		launchSuperJump(chargeAlpha)
+	else
+        if chargeAlpha < .75 then
+	        return
+        end
+		launchSlingshot(chargeAlpha)
+	end
+	return true
+end
+
+local function onSuperJumpAction(_, inputState)
+	if inputState == Enum.UserInputState.Begin then
+		if not canStartSkill(true) then
+			return Enum.ContextActionResult.Pass
+		end
+		beginCharge("SuperJump")
+		return Enum.ContextActionResult.Sink
+	elseif inputState == Enum.UserInputState.End then
+		return releaseCharge("SuperJump") and Enum.ContextActionResult.Sink or Enum.ContextActionResult.Pass
+	elseif inputState == Enum.UserInputState.Cancel and chargeKind == "SuperJump" then
+		clearCharge()
+		return Enum.ContextActionResult.Sink
+	end
+	return chargeKind == "SuperJump" and Enum.ContextActionResult.Sink or Enum.ContextActionResult.Pass
+end
+
+local function onSlingshotAction(_, inputState)
+	if inputState == Enum.UserInputState.Begin then
+		if not canStartSkill(true) then
+			return Enum.ContextActionResult.Pass
+		end
+		beginCharge("Slingshot")
+		return Enum.ContextActionResult.Sink
+	elseif inputState == Enum.UserInputState.End then
+		return releaseCharge("Slingshot") and Enum.ContextActionResult.Sink or Enum.ContextActionResult.Pass
+	elseif inputState == Enum.UserInputState.Cancel and chargeKind == "Slingshot" then
+		clearCharge()
+		return Enum.ContextActionResult.Sink
+	end
+	return chargeKind == "Slingshot" and Enum.ContextActionResult.Sink or Enum.ContextActionResult.Pass
+end
+
+local function removeAppliedFovBonus()
+	if appliedFovCamera and appliedFovBonus ~= 0 then
+		appliedFovCamera.FieldOfView = math.max(1, appliedFovCamera.FieldOfView - appliedFovBonus)
+	end
+	appliedFovBonus = 0
+	appliedFovCamera = nil
+end
+
+local function getEffectTargets(now)
+	local fovBonus = 0
+	local shakeIntensity = 0
+	if chargeKind then
+		local chargeAlpha = smoothStep(getChargeAlpha(now))
+		fovBonus = math.max(fovBonus, CHARGE_FOV_BONUS * chargeAlpha)
+		shakeIntensity = math.max(shakeIntensity, CHARGE_SHAKE_MAX * chargeAlpha)
+	end
+	if now < superJumpEffectEndAt then
+		local duration = math.max(SUPER_JUMP_EFFECT_DURATION, 0.01)
+		local progress = math.clamp((now - superJumpEffectStartedAt) / duration, 0, 1)
+		local intensity = 1 - smoothStep(progress)
+		fovBonus = math.max(fovBonus, SUPER_JUMP_FOV_BONUS * intensity)
+		shakeIntensity = math.max(shakeIntensity, SUPER_JUMP_SHAKE_MAX * intensity)
+	end
+	if slingshotActive then
+		local denominator = math.max(slingshotLaunchSpeed - SLINGSHOT_END_SPEED, 1)
+		local speedAlpha = math.clamp(
+			(rootPart.AssemblyLinearVelocity:Dot(slingshotDirection) - SLINGSHOT_END_SPEED) / denominator,
+			0,
+			1
+		)
+		fovBonus = math.max(fovBonus, SLINGSHOT_FOV_BONUS * speedAlpha)
+		shakeIntensity = math.max(shakeIntensity, SLINGSHOT_SHAKE_MAX * speedAlpha)
+	end
+	return fovBonus, shakeIntensity
+end
+
+local function updateCameraEffects(deltaTime)
+	removeAppliedFovBonus()
+	local camera = workspace.CurrentCamera
+	if not camera then
+		return
+	end
+	local targetFovBonus, targetShake = getEffectTargets(os.clock())
+	local fovBlend = 1 - math.exp(-FOV_RESPONSE * deltaTime)
+	local shakeBlend = 1 - math.exp(-SHAKE_RESPONSE * deltaTime)
+	currentFovBonus += (targetFovBonus - currentFovBonus) * fovBlend
+	currentShakeIntensity += (targetShake - currentShakeIntensity) * shakeBlend
+	if currentFovBonus > 0.001 then
+		camera.FieldOfView += currentFovBonus
+		appliedFovBonus = currentFovBonus
+		appliedFovCamera = camera
+	end
+	if currentShakeIntensity <= 0.001 then
+		return
+	end
+	local phase = os.clock() * SHAKE_FREQUENCY
+	local positionOffset = Vector3.new(
+		math.noise(phase, 0, 0),
+		math.noise(0, phase, 0),
+		0
+	) * SHAKE_MAX_POSITION * currentShakeIntensity
+	local rotationOffset = Vector3.new(
+		math.noise(phase, 3, 7),
+		math.noise(5, phase, 11),
+		math.noise(13, 17, phase)
+	) * SHAKE_MAX_ROTATION * currentShakeIntensity
+	camera.CFrame *= CFrame.new(positionOffset)
+		* CFrame.Angles(rotationOffset.X, rotationOffset.Y, rotationOffset.Z)
+end
+
+local function playBackflip()
+	if destroyed or humanoid.Health <= 0 or humanoid.FloorMaterial ~= Enum.Material.Air then
+		return
+	end
+
+	if rootPart.AssemblyLinearVelocity.Y < BACKFLIP_MIN_UPWARD_SPEED then
+		return
+	end
+
+	if character:GetAttribute("IsWallClimbing") == true or character:GetAttribute("ClimbModeEnabled") == true then
+		return
+	end
+
+	if not backflipAnimation or backflipAnimation.AnimationId == "" then
+		return
+	end
+
+	if loadedBackflipId ~= backflipAnimation.AnimationId then
+		if backflipTrack then
+			backflipTrack:Stop(BACKFLIP_FADE_TIME)
+			backflipTrack:Destroy()
+			backflipTrack = nil
+		end
+
+		local success, track = pcall(function()
+			return animator:LoadAnimation(backflipAnimation)
+		end)
+
+		if not success or not track then
+			return
+		end
+
+		backflipTrack = track
+		loadedBackflipId = backflipAnimation.AnimationId
+		backflipTrack.Looped = false
+		backflipTrack.Priority = Enum.AnimationPriority.Action4
+	end
+
+	if backflipTrack.IsPlaying then
+		backflipTrack:Stop(BACKFLIP_FADE_TIME)
+	end
+
+	backflipTrack:Play(BACKFLIP_FADE_TIME, 1, 1.7)
+
+    character:SetAttribute('IsBackflip', true)
+
+    local repeating = true
+
+    task.spawn(function()
+        while repeating == true do
+            if character:GetAttribute("IsWebSwinging") == true or character:GetAttribute("IsWebZipping") == true or character:GetAttribute("ClimbModeEnabled") == true then
+                backflipTrack:Stop()
+                return
+            end
+            task.wait()
+        end
+        return
+    end)
+
+    task.delay(.9, function()
+        repeating = false
+        character:SetAttribute('IsBackflip', false)
+        backflipTrack:Stop()
+    end)
+end
+
+local function updateTraversal(deltaTime)
+	if destroyed or humanoid.Health <= 0 then
+		return
+	end
+	if chargeKind then
+		local lostGround = humanoid.FloorMaterial == Enum.Material.Air
+		if lostGround or isTraversalBusy() then
+			clearCharge()
+		else
+			humanoid:Move(Vector3.zero, false)
+			local velocity = rootPart.AssemblyLinearVelocity
+			rootPart.AssemblyLinearVelocity = Vector3.new(0, velocity.Y, 0)
+		end
+	end
+	if slingshotActive then
+		if isTraversalBusy() then
+			stopSlingshot()
+			return
+		end
+		local now = os.clock()
+		local distance = (rootPart.Position - slingshotStartPosition).Magnitude
+		if distance >= SLINGSHOT_FULL_SPEED_DISTANCE then
+			slingshotSlowdownStarted = true
+		end
+		local velocity = rootPart.AssemblyLinearVelocity
+		local speedAlongDirection = velocity:Dot(slingshotDirection)
+		if slingshotSlowdownStarted then
+			if speedAlongDirection <= SLINGSHOT_END_SPEED then
+				stopSlingshot()
+			else
+				local nextSpeed = math.max(
+					SLINGSHOT_END_SPEED,
+					speedAlongDirection * math.exp(-SLINGSHOT_DECELERATION * math.min(deltaTime, 1 / 20))
+				)
+				rootPart.AssemblyLinearVelocity = velocity
+					+ slingshotDirection * (nextSpeed - speedAlongDirection)
+			end
+		elseif speedAlongDirection < slingshotLaunchSpeed then
+			rootPart.AssemblyLinearVelocity = velocity
+				+ slingshotDirection * (slingshotLaunchSpeed - speedAlongDirection)
+		end
+		if slingshotActive and now - slingshotStartedAt >= SLINGSHOT_MAX_DURATION then
+			stopSlingshot()
+		end
+	end
+end
+
+character:SetAttribute("IsSuperJumpCharging", false)
+character:SetAttribute("IsSlingshotCharging", false)
+character:SetAttribute("IsSlingshotTraveling", false)
+
+ContextActionService:BindActionAtPriority(
+	SUPER_JUMP_ACTION,
+	onSuperJumpAction,
+	false,
+	ACTION_PRIORITY,
+	SUPER_JUMP_KEY
+)
+ContextActionService:BindActionAtPriority(
+	SLINGSHOT_ACTION,
+	onSlingshotAction,
+	false,
+	ACTION_PRIORITY,
+	SLINGSHOT_KEY
+)
+RunService:BindToRenderStep(
+	CAMERA_PRE_ACTION,
+	Enum.RenderPriority.Camera.Value - 1,
+	removeAppliedFovBonus
+)
+RunService:BindToRenderStep(
+	CAMERA_POST_ACTION,
+	Enum.RenderPriority.Camera.Value + 2,
+	updateCameraEffects
+)
+
+heartbeatConnection = RunService.Heartbeat:Connect(updateTraversal)
+webSwingConnection = character:GetAttributeChangedSignal("IsWebSwinging"):Connect(function()
+	local isWebSwinging = character:GetAttribute("IsWebSwinging") == true
+	if previousWebSwinging and not isWebSwinging then
+        if math.random(1,100) >= 60 then
+            playBackflip()
+        end
+	end
+	previousWebSwinging = isWebSwinging
+end)
+diedConnection = humanoid.Died:Connect(function()
+	clearCharge()
+	stopSlingshot()
+	superJumpEffectEndAt = 0
+end)
+
+character.Destroying:Connect(function()
+	destroyed = true
+	clearCharge()
+	stopSlingshot()
+	superJumpEffectEndAt = 0
+	ContextActionService:UnbindAction(SUPER_JUMP_ACTION)
+	ContextActionService:UnbindAction(SLINGSHOT_ACTION)
+	RunService:UnbindFromRenderStep(CAMERA_PRE_ACTION)
+	RunService:UnbindFromRenderStep(CAMERA_POST_ACTION)
+	removeAppliedFovBonus()
+	if heartbeatConnection then
+		heartbeatConnection:Disconnect()
+	end
+	if webSwingConnection then
+		webSwingConnection:Disconnect()
+	end
+	if diedConnection then
+		diedConnection:Disconnect()
+	end
+	if backflipTrack then
+		backflipTrack:Stop(0)
+		backflipTrack:Destroy()
+	end
+end)
+
+-- ESP
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local Lighting = game:GetService("Lighting")
+local SoundService = game:GetService("SoundService")
+local UserInputService = game:GetService("UserInputService")
+
+local LocalPlayer = Players.LocalPlayer
+
+local Enabled = false
+local ESP = {}
+
+local ColorCorrection = Instance.new("ColorCorrectionEffect")
+ColorCorrection.Name = "SpiderSense"
+ColorCorrection.TintColor = Color3.fromRGB(255, 170, 100)
+ColorCorrection.Brightness = -0.12
+ColorCorrection.Contrast = 0.18
+ColorCorrection.Saturation = -0.05
+ColorCorrection.Enabled = false
+ColorCorrection.Parent = Lighting
+
+local Vignette = Instance.new("ScreenGui")
+Vignette.Name = "SpiderSenseVignette"
+Vignette.ResetOnSpawn = false
+Vignette.IgnoreGuiInset = true
+Vignette.Parent = LocalPlayer:WaitForChild("PlayerGui")
+
+local VignetteFrame = Instance.new("Frame")
+VignetteFrame.Size = UDim2.fromScale(1, 1)
+VignetteFrame.BackgroundColor3 = Color3.fromRGB(255, 75, 25)
+VignetteFrame.BackgroundTransparency = 1
+VignetteFrame.BorderSizePixel = 0
+VignetteFrame.Parent = Vignette
+
+local VignetteGradient = Instance.new("UIGradient")
+VignetteGradient.Transparency = NumberSequence.new({
+	NumberSequenceKeypoint.new(0, 0.25),
+	NumberSequenceKeypoint.new(0.35, 0.8),
+	NumberSequenceKeypoint.new(0.5, 1),
+	NumberSequenceKeypoint.new(0.65, 0.8),
+	NumberSequenceKeypoint.new(1, 0.25)
+})
+VignetteGradient.Parent = VignetteFrame
+
+local Heartbeat = Instance.new("Sound")
+Heartbeat.Name = "SpiderSenseHeartbeat"
+Heartbeat.SoundId = "rbxassetid://139459003161851"
+Heartbeat.Volume = .5
+Heartbeat.Looped = true
+Heartbeat.Parent = SoundService
+
+local function HasGun(Player)
+	local Character = Player.Character
+
+	if not Character then
+		return false
+	end
+
+	for _, Object in Character:GetChildren() do
+		if Object:IsA("Tool") and Object:FindFirstChild("Ammo", true) then
+			return true
+		end
+	end
+
+	return false
+end
+
+local function AddESP(Player)
+	if Player == LocalPlayer then
+		return
+	end
+
+	if ESP[Player] then
+		RemoveESP(Player)
+	end
+
+	local Character = Player.Character
+
+	if not Character then
+		return
+	end
+
+	local Head = Character:FindFirstChild("Head")
+
+	if not Head then
+		return
+	end
+
+	local Highlight = Instance.new("Highlight")
+	Highlight.Name = "SpiderSenseHighlight"
+	Highlight.FillColor = Color3.fromRGB(15, 35, 75)
+	Highlight.FillTransparency = 0.4
+	Highlight.OutlineColor = Color3.fromRGB(255, 115, 35)
+	Highlight.OutlineTransparency = 0.2
+	Highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+	Highlight.Adornee = Character
+	Highlight.Parent = Character
+
+	local Billboard = Instance.new("BillboardGui")
+	Billboard.Name = "SpiderSenseInfo"
+	Billboard.Adornee = Head
+	Billboard.Size = UDim2.fromOffset(180, 55)
+	Billboard.StudsOffset = Vector3.new(0, 3, 0)
+	Billboard.AlwaysOnTop = true
+	Billboard.Parent = Vignette
+
+	local Name = Instance.new("TextLabel")
+	Name.BackgroundTransparency = 1
+	Name.Size = UDim2.new(1, 0, 0, 22)
+	Name.Font = Enum.Font.GothamBold
+	Name.TextColor3 = Color3.fromRGB(255, 135, 55)
+	Name.TextStrokeTransparency = 0.4
+	Name.TextSize = 14
+	Name.Text = Player.DisplayName
+	Name.Parent = Billboard
+
+	local Info = Instance.new("TextLabel")
+	Info.BackgroundTransparency = 1
+	Info.Position = UDim2.fromOffset(0, 22)
+	Info.Size = UDim2.new(1, 0, 0, 22)
+	Info.Font = Enum.Font.Gotham
+	Info.TextColor3 = Color3.fromRGB(220, 220, 220)
+	Info.TextStrokeTransparency = 0.5
+	Info.TextSize = 12
+	Info.Parent = Billboard
+
+	ESP[Player] = {
+		Highlight = Highlight,
+		Billboard = Billboard,
+		Name = Name,
+		Info = Info
+	}
+end
+
+function RemoveESP(Player)
+	local Data = ESP[Player]
+
+	if not Data then
+		return
+	end
+
+	if Data.Highlight then
+		Data.Highlight:Destroy()
+	end
+
+	if Data.Billboard then
+		Data.Billboard:Destroy()
+	end
+
+	ESP[Player] = nil
+end
+
+local function ToggleSpiderSense()
+	Enabled = not Enabled
+
+	ColorCorrection.Enabled = Enabled
+
+	if Enabled then
+		Heartbeat:Play()
+
+		for _, Player in Players:GetPlayers() do
+			AddESP(Player)
+		end
+	else
+		Heartbeat:Stop()
+
+		VignetteFrame.BackgroundTransparency = 1
+
+		for Player in pairs(ESP) do
+			RemoveESP(Player)
+		end
+	end
+end
+
+UserInputService.InputBegan:Connect(function(Input, Typing)
+	if Typing then
+		return
+	end
+
+	if Input.KeyCode == Enum.KeyCode.H then
+		ToggleSpiderSense()
+	end
+end)
+
+Players.PlayerAdded:Connect(function(Player)
+	if Enabled then
+		if Player.Character then
+			AddESP(Player)
+		end
+	end
+
+	Player.CharacterAdded:Connect(function()
+		if Enabled then
+			task.wait(0.2)
+			AddESP(Player)
+		end
+	end)
+end)
+
+for _, Player in Players:GetPlayers() do
+	if Player ~= LocalPlayer then
+		Player.CharacterAdded:Connect(function()
+			if Enabled then
+				task.wait(0.2)
+				AddESP(Player)
+			end
+		end)
+	end
+end
+
+Players.PlayerRemoving:Connect(function(Player)
+	RemoveESP(Player)
+end)
+
+RunService.RenderStepped:Connect(function()
+	if not Enabled then
+		return
+	end
+
+	local MyCharacter = LocalPlayer.Character
+	local MyRoot = MyCharacter and MyCharacter:FindFirstChild("HumanoidRootPart")
+
+	if not MyRoot then
+		return
+	end
+
+	local ClosestGunDistance = math.huge
+
+	for Player, Data in pairs(ESP) do
+		local Character = Player.Character
+		local Humanoid = Character and Character:FindFirstChildOfClass("Humanoid")
+		local Root = Character and Character:FindFirstChild("HumanoidRootPart")
+		local Head = Character and Character:FindFirstChild("Head")
+
+		if Character and Humanoid and Root and Head and Humanoid.Health > 0 then
+			Data.Highlight.Adornee = Character
+			Data.Billboard.Adornee = Head
+
+			local Distance = (MyRoot.Position - Root.Position).Magnitude
+			local DistanceNumber = math.floor(Distance)
+
+			Data.Info.Text =
+				math.floor(Humanoid.Health) ..
+				"/" ..
+				math.floor(Humanoid.MaxHealth) ..
+				" - " ..
+				DistanceNumber ..
+				" studs"
+
+			local DistanceAlpha = math.clamp(1 - (Distance / 150), 0, 1)
+
+			Data.Highlight.OutlineTransparency =
+				0.65 - (DistanceAlpha * 0.65)
+
+			Data.Highlight.FillTransparency =
+				0.55 - (DistanceAlpha * 0.2)
+
+			if HasGun(Player) then
+				Data.Highlight.OutlineColor = Color3.fromRGB(255, 65, 30)
+				Data.Highlight.FillColor = Color3.fromRGB(75, 20, 25)
+
+				if Distance < ClosestGunDistance then
+					ClosestGunDistance = Distance
+				end
+			else
+				Data.Highlight.OutlineColor = Color3.fromRGB(255, 115, 35)
+				Data.Highlight.FillColor = Color3.fromRGB(15, 35, 75)
+			end
+		else
+			RemoveESP(Player)
+		end
+	end
+
+	if ClosestGunDistance < math.huge then
+		local DangerAlpha = math.clamp(1 - (ClosestGunDistance / 150), 0, 1)
+
+		VignetteFrame.BackgroundTransparency =
+			0.95 - (DangerAlpha * 0.5)
+
+		Heartbeat.PlaybackSpeed =
+			0.85 + (DangerAlpha * 0.75)
+
+		Heartbeat.Volume =
+			0.25 + (DangerAlpha * 0.25)
+	else
+		VignetteFrame.BackgroundTransparency = 1
+
+		Heartbeat.PlaybackSpeed = 0.85
+		Heartbeat.Volume = 0.25
+	end
+end)
+
+local Players = game:GetService("Players")
+local ContextActionService = game:GetService("ContextActionService")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+
+local player = Players.LocalPlayer
+local character = player.Character
+local humanoid = character:WaitForChild("Humanoid")
+local rootPart = character:WaitForChild("HumanoidRootPart")
+local animator = humanoid:FindFirstChildOfClass("Animator") or humanoid:WaitForChild("Animator")
+
+local wind_sfx = Instance.new('Sound', character.Head)
+wind_sfx.SoundId = 'rbxassetid://5113213873'
+wind_sfx.RollOffMaxDistance = math.huge
+wind_sfx.Volume = 0
+wind_sfx.Looped = true
+wind_sfx:Play()
+
+local wind_sfx2 = Instance.new('Sound', character.Head)
+wind_sfx2.SoundId = 'rbxassetid://5113213873'
+wind_sfx2.RollOffMaxDistance = math.huge
+wind_sfx2.Volume = 0
+wind_sfx2.Looped = true
+wind_sfx2:Play()
+
+--[[character.Animate.idle.Animation1.AnimationId = 'rbxassetid://119758813315245'
+character.Animate.idle.Animation2.AnimationId = 'rbxassetid://119758813315245'
+
+character.Animate.jump.JumpAnim.AnimationId = 'rbxassetid://137947353570049'
+
+character.Animate.fall.FallAnim.AnimationId = 'rbxassetid://87487899978506']]
+
+local SHIFT_ACTION = "SpiderSwingShift_" .. player.UserId
+local JUMP_ACTION = "SpiderSwingJump_" .. player.UserId
+local CAMERA_ACTION = "SpiderSwingCamera_" .. player.UserId
+local SWING_KEY = Enum.KeyCode.Q
+local ACTION_PRIORITY = 3150
+local SHIFT_HOLD_TIME = 0.14
+local TAP_MAX_TIME = 0.24
+local SWING_ANIMATION_HOLD_OFFSET = 0.08
+local TARGET_RETRY_INTERVAL = 0.05
+
+local SWING_AIR_ANCHOR_FORWARD = 115
+local SWING_AIR_ANCHOR_HEIGHT = 135
+local SWING_AIR_AIM_HEIGHT = 50
+local SWING_INITIAL_ROPE_MULTIPLIER = .5--0.68
+local ZIP_AIR_DISTANCE = 1440
+
+local ROPE_SLACK = 0.11
+local ROPE_ELASTICITY = 0.20
+local ROPE_STIFFNESS = 2.7
+local ROPE_DAMPING = 1.65
+local ROPE_CENTRIPETAL_STRENGTH = 0.52
+local ROPE_RADIAL_CONVERSION = 0.43
+local ROPE_MAX_TENSION_ACCELERATION = 360
+
+local SWING_ACCELERATION = 86--32
+local SWING_SPEED_GAIN = 0.38--0.20
+local SWING_TARGET_SPEED = 186--246--112
+local SWING_FALL_TO_FORWARD = 0.60
+local SWING_STEERING_STRENGTH = 50
+local SWING_CAMERA_STEERING = 31
+local SWING_VERTICAL_STEERING = 23
+local SWING_FORWARD_INPUT_MULTIPLIER = 1.3
+local SWING_BRAKE_ACCELERATION = 22
+local SWING_START_FORWARD_BOOST = 45
+local SWING_START_MIN_FORWARD_SPEED = 60
+local SWING_SOFT_SPEED_CAP = 185
+local SWING_MAX_SPEED = 235
+local SWING_SPEED_CAP_DAMPING = 2.4
+local SWING_GRAVITY_COMPENSATION = 0.04
+
+local APEX_MIN_HEIGHT_GAIN = 45
+local APEX_MAX_HEIGHT_GAIN = 90
+local APEX_ANCHOR_HEIGHT_OFFSET = 14
+local APEX_MIN_SWING_TIME = 0.9
+local APEX_MAX_SWING_TIME = 10--2.8
+local APEX_DESCENT_SPEED = -9
+local APEX_ASCENT_SPEED = 8
+local APEX_ASSIST_TRIGGER_TIME = 0.32
+local APEX_ASSIST_TRIGGER_DROP = 5
+local APEX_CREST_SPEED = 2
+local APEX_INITIAL_UPWARD_SPEED = 35
+local APEX_FINAL_UPWARD_SPEED = 8
+local APEX_ASSIST_RESPONSE = 3.2
+local APEX_ASSIST_MAX_ACCELERATION = 210
+local APEX_GRAVITY_COMPENSATION = 0.38
+local APEX_FORWARD_ACCELERATION = 34--32
+local APEX_MOMENTUM_RETENTION = 0.88
+local APEX_MOMENTUM_GAIN = .3--0.25
+local APEX_RELEASE_FORWARD_BOOST = 20--16
+local APEX_RELEASE_UPWARD_BOOST = 7
+local RELEASE_MOMENTUM_RETENTION = 1.28--1.08
+local JUMP_FORWARD_BOOST = 14--12
+local JUMP_UPWARD_BOOST = 18
+
+local GROUND_ASSIST_HEIGHT = 24
+local GROUND_CLEARANCE = 7
+local GROUND_ASSIST_ACCELERATION = 280
+local GROUND_MAX_BRAKE = 600
+local GROUND_RELEASE_GRACE = 0.65
+
+local ZIP_STOP_DISTANCE = 7
+local ZIP_MIN_SPEED = 140
+local ZIP_MAX_SPEED = 320
+local ZIP_ACCELERATION = 950
+local ZIP_RESPONSE = 17
+local ZIP_MAX_DURATION = 0.32
+local ZIP_LATERAL_RETENTION = 0.68
+local ZIP_GRAVITY_COMPENSATION = 0.85
+local ZIP_START_IMPULSE = 65
+local ZIP_EXIT_LIFT = 7
+
+local AIR_CONTROL_ACCELERATION = 16
+local AIR_STEERING_ACCELERATION = 24
+local AIR_CONTROL_SPEED_LIMIT = 320
+
+local FOV_MIN = 70
+local FOV_MAX = 100
+local FOV_START_SPEED = 45
+local FOV_FULL_SPEED = 230
+local FOV_RESPONSE = 5 --6.5
+local SHAKE_START_SPEED = 85
+local SHAKE_FULL_SPEED = 240
+local SHAKE_ACCELERATION_START = 85
+local SHAKE_ACCELERATION_FULL = 240--420
+local SHAKE_MAX_POSITION = 0.1
+local SHAKE_MAX_ROTATION = math.rad(0.32)
+local SHAKE_RESPONSE = 4--8
+local SHAKE_FREQUENCY = 14--18
+
+local ORIENTATION_RESPONSE = 14
+local ORIENTATION_MAX_TORQUE = 420000
+local ORIENTATION_MAX_ANGULAR_VELOCITY = 34
+local CHARACTER_MAX_LEAN = math.rad(9)
+
+local destroyed = false
+local shiftHeld = false
+local shiftPending = false
+local shiftPressedAt = 0
+local nextTargetAttemptAt = 0
+local activeMode
+local swingRopeLength = 0
+local swingStartedAt = 0
+local swingStartHeight = 0
+local swingTargetApexHeight = 0
+local swingHadDescent = false
+local swingAscentStarted = false
+local swingAscentStartHeight = 0
+local previousSwingVerticalVelocity = 0
+local swingPeakSpeed = 0
+local swingTravelDirection = Vector3.zAxis
+local groundedTime = 0
+local zipStartedAt = 0
+local physicsActive = false
+local savedAutoRotate = humanoid.AutoRotate
+local baseFieldOfView = workspace.CurrentCamera and workspace.CurrentCamera.FieldOfView or FOV_MIN
+local currentShakeIntensity = 0
+local previousCameraVelocity = rootPart.AssemblyLinearVelocity
+local forceAttachment
+local vectorForce
+local alignOrientation
+local webOriginAttachment
+local webTargetAttachment
+local webAnchorPart
+local activeWebBeam
+local secondaryWebOriginAttachment
+local secondaryActiveWebBeam
+local activeTrack
+local swingAnimationPaused = false
+local loadedTracks = {}
+
+local w = Instance.new('Beam', workspace)
+w.Name = 'Web'
+w.LightEmission = 0.1
+w.Texture = 'rbxassetid://6984162060'
+w.TextureLength = 6
+w.TextureMode = Enum.TextureMode.Wrap
+w.TextureSpeed = 0
+w.ZOffset = -1
+w.FaceCamera = true
+w.Segments = 10
+w.Width0 = 5
+w.Width1 = 6
+
+local webTemplate = workspace:FindFirstChild("Web")
+
+if webTemplate and webTemplate:IsA("Beam") then
+	webTemplate.Enabled = false
+else
+	webTemplate = nil
+end
+
+local function projectOntoPlane(vector, normal)
+	return vector - normal * vector:Dot(normal)
+end
+
+local function smoothStep(value)
+	local alpha = math.clamp(value, 0, 1)
+	return alpha * alpha * (3 - 2 * alpha)
+end
+
+local function isClimbing()
+	return character:GetAttribute("ClimbModeEnabled") == true
+		or character:GetAttribute("IsWallClimbing") == true
+end
+
+local function isAirborne()
+	if humanoid.FloorMaterial == Enum.Material.Air then
+		return true
+	end
+	local state = humanoid:GetState()
+	return state == Enum.HumanoidStateType.Freefall
+		or state == Enum.HumanoidStateType.Jumping
+		or state == Enum.HumanoidStateType.FallingDown
+end
+
+local function canUseWebs()
+	return not destroyed and humanoid.Health > 0 and not isClimbing()
+end
+
+local function getCamera()
+	return workspace.CurrentCamera
+end
+
+local function getCameraForward()
+	local camera = getCamera()
+	if camera then
+		return camera.CFrame.LookVector
+	end
+	return rootPart.CFrame.LookVector
+end
+
+local function getHorizontalDirection(vector)
+	local horizontal = projectOntoPlane(vector, Vector3.yAxis)
+	if horizontal.Magnitude < 0.05 then
+		return nil
+	end
+	return horizontal.Unit
+end
+
+local function getHorizontalForward()
+	return getHorizontalDirection(getCameraForward())
+		or getHorizontalDirection(rootPart.CFrame.LookVector)
+		or Vector3.zAxis
+end
+
+local function getTravelDirection(velocity)
+	return getHorizontalDirection(velocity)
+		or getHorizontalDirection(swingTravelDirection)
+		or getHorizontalForward()
+end
+
+local function getSwingAirTarget()
+	local look = getCameraForward()
+	return rootPart.Position
+		+ getHorizontalForward() * SWING_AIR_ANCHOR_FORWARD
+		+ Vector3.yAxis
+			* (SWING_AIR_ANCHOR_HEIGHT + math.clamp(look.Y, -0.35, 0.8) * SWING_AIR_AIM_HEIGHT)
+end
+
+local function getCursorAirTarget()
+	local camera = getCamera()
+	if not camera then
+		return rootPart.Position + getCameraForward() * ZIP_AIR_DISTANCE
+	end
+	local mouseLocation = UserInputService:GetMouseLocation()
+	local ray = camera:ViewportPointToRay(mouseLocation.X, mouseLocation.Y)
+	return ray.Origin + ray.Direction.Unit * ZIP_AIR_DISTANCE
+end
+
+local SwingAnimation = Instance.new('Animation', character); SwingAnimation.Name = 'SwingAnimation'; SwingAnimation.AnimationId = 'rbxassetid://94315611946161'
+
+local ZipAnimation = Instance.new('Animation', character); ZipAnimation.Name = 'WebZipAnimation'; ZipAnimation.AnimationId = 'rbxassetid://100103306715371'
+
+local BackAnimation = Instance.new('Animation', character); BackAnimation.Name = 'BackAnimation'; BackAnimation.AnimationId = 'rbxassetid://74012998347103'
+
+
+local function getAnimationTrack(name)
+	local existing = loadedTracks[name]
+	if existing then
+		return existing
+	end
+	local animation = character:FindFirstChild(name)
+	if not animation or not animation:IsA("Animation") or animation.AnimationId == "" then
+		return nil
+	end
+	local success, track = pcall(function()
+		return animator:LoadAnimation(animation)
+	end)
+	if not success or not track then
+		return nil
+	end
+	track.Priority = Enum.AnimationPriority.Movement
+	loadedTracks[name] = track
+	return track
+end
+
+local function stopAnimation()
+	if activeTrack then
+		activeTrack:AdjustSpeed(1)
+		if activeTrack.IsPlaying then
+			activeTrack:Stop(0.16)
+		end
+	end
+	activeTrack = nil
+	swingAnimationPaused = false
+end
+
+local function playAnimation(name)
+	local track = getAnimationTrack(name)
+
+	if not track then
+		stopAnimation()
+		return
+	end
+
+	if activeTrack ~= track then
+		stopAnimation()
+		activeTrack = track
+	end
+
+    if not track.IsPlaying then
+		track:Play(0.16, 1, 1)
+	end
+
+    track.Priority = Enum.AnimationPriority.Action4
+
+	if name == "SwingAnimation" then
+		swingAnimationPaused = false
+		track.Looped = false
+        track.Priority = Enum.AnimationPriority.Action4
+		track:AdjustSpeed(.3)
+	end
+end
+
+local function updateSwingAnimationHold()
+	local track = loadedTracks.SwingAnimation
+	if activeMode ~= "Swing" or activeTrack ~= track or not track or swingAnimationPaused then
+		return
+	end
+	local length = track.Length
+	if length <= 0 then
+		return
+	end
+	local holdPosition = math.max(0, length - SWING_ANIMATION_HOLD_OFFSET)
+	if track.TimePosition >= holdPosition or not track.IsPlaying then
+		if not track.IsPlaying then
+			track:Play(0, 1, 1)
+		end
+		track.TimePosition = holdPosition
+		track:AdjustSpeed(0)
+		swingAnimationPaused = true
+	end
+end
+
+local function ensurePhysicsObjects()
+	if forceAttachment then
+		return
+	end
+	forceAttachment = Instance.new("Attachment")
+	forceAttachment.Name = "SpiderSwingAttachment"
+	forceAttachment.Parent = rootPart
+	vectorForce = Instance.new("VectorForce")
+	vectorForce.Name = "SpiderSwingForce"
+	vectorForce.Attachment0 = forceAttachment
+	vectorForce.RelativeTo = Enum.ActuatorRelativeTo.World
+	vectorForce.ApplyAtCenterOfMass = true
+	vectorForce.Force = Vector3.zero
+	vectorForce.Enabled = false
+	vectorForce.Parent = rootPart
+	alignOrientation = Instance.new("AlignOrientation")
+	alignOrientation.Name = "SpiderSwingOrientation"
+	alignOrientation.Mode = Enum.OrientationAlignmentMode.OneAttachment
+	alignOrientation.Attachment0 = forceAttachment
+	alignOrientation.MaxTorque = ORIENTATION_MAX_TORQUE
+	alignOrientation.MaxAngularVelocity = ORIENTATION_MAX_ANGULAR_VELOCITY
+	alignOrientation.Responsiveness = ORIENTATION_RESPONSE
+	alignOrientation.RigidityEnabled = false
+	alignOrientation.Enabled = false
+	alignOrientation.Parent = rootPart
+end
+
+local function createWebBeam(originAttachment, beamName)
+	local beam
+	if webTemplate and webTemplate.Parent then
+		beam = webTemplate:Clone()
+	else
+		beam = Instance.new("Beam")
+		beam.FaceCamera = true
+		beam.Width0 = 0.08
+		beam.Width1 = 0.055
+		beam.Color = ColorSequence.new(Color3.new(1, 1, 1))
+	end
+	beam.Name = beamName
+	beam.Attachment0 = originAttachment
+	beam.Attachment1 = webTargetAttachment
+	beam.Enabled = true
+	beam.Parent = originAttachment
+	return beam
+end
+
+local function clearWebVisual()
+	if activeWebBeam then
+		activeWebBeam:Destroy()
+		activeWebBeam = nil
+	end
+	if secondaryActiveWebBeam then
+		secondaryActiveWebBeam:Destroy()
+		secondaryActiveWebBeam = nil
+	end
+	if webOriginAttachment then
+		webOriginAttachment:Destroy()
+		webOriginAttachment = nil
+	end
+	if secondaryWebOriginAttachment then
+		secondaryWebOriginAttachment:Destroy()
+		secondaryWebOriginAttachment = nil
+	end
+	if webTargetAttachment then
+		webTargetAttachment:Destroy()
+		webTargetAttachment = nil
+	end
+	if webAnchorPart then
+		webAnchorPart:Destroy()
+		webAnchorPart = nil
+	end
+end
+
+local function createWebVisual(targetPosition, useBothHands)
+	clearWebVisual()
+	local originPart = character:FindFirstChild("RightHand")
+		or character:FindFirstChild("Right Arm")
+		or character:FindFirstChild("RightLowerArm")
+		or rootPart
+	webOriginAttachment = Instance.new("Attachment")
+	webOriginAttachment.Name = "SpiderWebOrigin"
+	webOriginAttachment.Parent = originPart
+	webAnchorPart = Instance.new("Part")
+	webAnchorPart.Name = "SpiderWebAirAnchor"
+	webAnchorPart.Anchored = true
+	webAnchorPart.CanCollide = false
+	webAnchorPart.CanQuery = false
+	webAnchorPart.CanTouch = false
+	webAnchorPart.CastShadow = false
+	webAnchorPart.Transparency = 1
+	webAnchorPart.Size = Vector3.one * 0.2
+	webAnchorPart.Position = targetPosition
+	webAnchorPart.Parent = workspace
+	webTargetAttachment = Instance.new("Attachment")
+	webTargetAttachment.Name = "SpiderWebTarget"
+	webTargetAttachment.Parent = webAnchorPart
+	activeWebBeam = createWebBeam(webOriginAttachment, "ActiveWeb")
+    
+    local S = Instance.new('Sound', character.Head); S.SoundId = 'rbxassetid://9120629100'; S.RollOffMaxDistance = 500; S.Volume = 1; S:Play(); game:GetService('Debris'):AddItem(S, 5)
+
+	if useBothHands then
+        local S = Instance.new('Sound', character.Head); S.SoundId = 'rbxassetid://9120629100'; S.RollOffMaxDistance = 500; S.Volume = 1; S:Play(); game:GetService('Debris'):AddItem(S, 5)
+
+		local secondaryOriginPart = character:FindFirstChild("LeftHand")
+			or character:FindFirstChild("Left Arm")
+			or character:FindFirstChild("LeftLowerArm")
+			or rootPart
+		secondaryWebOriginAttachment = Instance.new("Attachment")
+		secondaryWebOriginAttachment.Name = "SpiderWebSecondaryOrigin"
+		secondaryWebOriginAttachment.Parent = secondaryOriginPart
+		secondaryActiveWebBeam = createWebBeam(secondaryWebOriginAttachment, "ActiveSecondaryWeb")
+	end
+end
+
+local function getAnchorPosition()
+	if not webTargetAttachment or not webTargetAttachment.Parent then
+		return nil
+	end
+	if not webTargetAttachment.Parent:IsDescendantOf(workspace) then
+		return nil
+	end
+	return webTargetAttachment.WorldPosition
+end
+
+local function enableActivePhysics()
+	ensurePhysicsObjects()
+	if not physicsActive then
+		physicsActive = true
+		savedAutoRotate = humanoid.AutoRotate
+	end
+	humanoid.AutoRotate = false
+	vectorForce.Enabled = true
+	alignOrientation.Enabled = true
+end
+
+local function disableActivePhysics()
+	if vectorForce then
+		vectorForce.Force = Vector3.zero
+		vectorForce.Enabled = false
+	end
+	if alignOrientation then
+		alignOrientation.Enabled = false
+	end
+	if physicsActive then
+		physicsActive = false
+		humanoid.AutoRotate = savedAutoRotate
+	end
+end
+
+local function setModeAttributes(mode)
+	character:SetAttribute("IsWebSwinging", mode == "Swing")
+	character:SetAttribute("IsWebZipping", mode == "Zip")
+end
+
+local function stopActiveMode()
+	activeMode = nil
+	swingRopeLength = 0
+	swingStartedAt = 0
+	swingStartHeight = 0
+	swingTargetApexHeight = 0
+	swingHadDescent = false
+	swingAscentStarted = false
+	swingAscentStartHeight = 0
+	previousSwingVerticalVelocity = 0
+	swingPeakSpeed = 0
+	groundedTime = 0
+	zipStartedAt = 0
+	setModeAttributes(nil)
+	disableActivePhysics()
+	clearWebVisual()
+	stopAnimation()
+end
+
+local function applyReleaseVelocity(releaseType)
+	local velocity = rootPart.AssemblyLinearVelocity * RELEASE_MOMENTUM_RETENTION
+	local travelDirection = getTravelDirection(velocity)
+	if releaseType == "Apex" then
+		velocity += travelDirection * APEX_RELEASE_FORWARD_BOOST
+			+ Vector3.yAxis * APEX_RELEASE_UPWARD_BOOST
+	elseif releaseType == "Jump" then
+		velocity += travelDirection * JUMP_FORWARD_BOOST
+			+ Vector3.yAxis * JUMP_UPWARD_BOOST
+	end
+	rootPart.AssemblyLinearVelocity = velocity
+end
+
+local function stopSwing(releaseType)
+    wind_sfx.Volume = 0
+
+    local S = Instance.new('Sound', character.Head); S.SoundId = 'rbxassetid://9120627691'; S.RollOffMaxDistance = 500; S.Volume = 1; S:Play(); game:GetService('Debris'):AddItem(S, 5)
+
+	if activeMode ~= "Swing" then
+		return
+	end
+
+	if releaseType then
+		applyReleaseVelocity(releaseType)
+	end
+	stopActiveMode()
+end
+
+local function stopZip(addExitLift)
+    wind_sfx.Volume = 0
+
+    local S = Instance.new('Sound', character.Head); S.SoundId = 'rbxassetid://9120627691'; S.RollOffMaxDistance = 500; S.Volume = 1; S:Play(); game:GetService('Debris'):AddItem(S, 5)
+
+	if activeMode ~= "Zip" then
+		return
+	end
+
+	if addExitLift then
+		rootPart.AssemblyLinearVelocity += Vector3.yAxis * ZIP_EXIT_LIFT
+	end
+
+	stopActiveMode()
+end
+
+local function startSwing()
+	if not canUseWebs() or not isAirborne() then
+		return false
+	end
+	if activeMode then
+		stopActiveMode()
+	end
+	createWebVisual(getSwingAirTarget())
+	local anchorPosition = getAnchorPosition()
+	if not anchorPosition then
+		clearWebVisual()
+		return false
+	end
+	local distance = (rootPart.Position - anchorPosition).Magnitude
+	swingRopeLength = distance * SWING_INITIAL_ROPE_MULTIPLIER
+	swingStartedAt = os.clock()
+	swingStartHeight = rootPart.Position.Y
+	swingTargetApexHeight = math.clamp(
+		anchorPosition.Y + APEX_ANCHOR_HEIGHT_OFFSET,
+		swingStartHeight + APEX_MIN_HEIGHT_GAIN,
+		swingStartHeight + APEX_MAX_HEIGHT_GAIN
+	)
+	swingHadDescent = rootPart.AssemblyLinearVelocity.Y <= APEX_DESCENT_SPEED
+	swingAscentStarted = false
+	swingAscentStartHeight = swingStartHeight
+	previousSwingVerticalVelocity = rootPart.AssemblyLinearVelocity.Y
+	swingPeakSpeed = rootPart.AssemblyLinearVelocity.Magnitude
+	swingTravelDirection = getTravelDirection(rootPart.AssemblyLinearVelocity)
+	groundedTime = 0
+	activeMode = "Swing"
+	setModeAttributes(activeMode)
+	enableActivePhysics()
+	playAnimation("SwingAnimation")
+	humanoid:ChangeState(Enum.HumanoidStateType.Freefall)
+	local velocity = rootPart.AssemblyLinearVelocity
+	local forward = getHorizontalForward()
+	local forwardSpeed = velocity:Dot(forward)
+	if forwardSpeed < SWING_START_MIN_FORWARD_SPEED then
+		local boost = math.min(
+			SWING_START_FORWARD_BOOST,
+			SWING_START_MIN_FORWARD_SPEED - forwardSpeed
+		)
+		rootPart.AssemblyLinearVelocity += forward * boost
+	end
+	return true
+end
+
+local function startZip()
+	if not canUseWebs() or not isAirborne() then
+		return false
+	end
+
+	if activeMode then
+		stopActiveMode()
+	end
+
+	createWebVisual(getCursorAirTarget(), true)
+
+	local anchorPosition = getAnchorPosition()
+
+	if not anchorPosition then
+		clearWebVisual()
+		return false
+	end
+
+	zipStartedAt = os.clock()
+	activeMode = "Zip"
+	setModeAttributes(activeMode)
+	enableActivePhysics()
+	playAnimation("WebZipAnimation")
+	humanoid:ChangeState(Enum.HumanoidStateType.Freefall)
+	local offset = anchorPosition - rootPart.Position
+	if offset.Magnitude > 1 then
+		rootPart.AssemblyLinearVelocity += offset.Unit * ZIP_START_IMPULSE
+	end
+	return true
+end
+
+local function updateOrientation(velocity)
+	if not alignOrientation or velocity.Magnitude < 3 then
+		return
+	end
+	local forward = velocity.Unit
+	local upReference = Vector3.yAxis
+	if math.abs(forward:Dot(upReference)) > 0.94 then
+		upReference = getHorizontalForward()
+	end
+	local speedAlpha = smoothStep(velocity.Magnitude / SWING_SOFT_SPEED_CAP)
+	alignOrientation.CFrame = CFrame.lookAt(Vector3.zero, forward, upReference)
+		* CFrame.Angles(-CHARACTER_MAX_LEAN * speedAlpha, 0, 0)
+end
+
+local function getInputStrengths()
+	local forward = 0
+	local side = 0
+	if UserInputService:IsKeyDown(Enum.KeyCode.W) then forward += 1 end
+	if UserInputService:IsKeyDown(Enum.KeyCode.S) then forward -= 1 end
+	if UserInputService:IsKeyDown(Enum.KeyCode.D) then side += 1 end
+	if UserInputService:IsKeyDown(Enum.KeyCode.A) then side -= 1 end
+	return forward, side
+end
+
+local function getGroundAssist(velocity)
+	local params = RaycastParams.new()
+	params.FilterType = Enum.RaycastFilterType.Exclude
+	params.FilterDescendantsInstances = {character}
+	params.IgnoreWater = true
+	params.RespectCanCollide = true
+	local result = workspace:Raycast(rootPart.Position, -Vector3.yAxis * GROUND_ASSIST_HEIGHT, params)
+	if not result then
+		return 0
+	end
+	local proximity = 1 - math.clamp(result.Distance / GROUND_ASSIST_HEIGHT, 0, 1)
+	local downwardSpeed = math.max(0, -velocity.Y)
+	local brakingDistance = math.max(0.75, result.Distance - GROUND_CLEARANCE)
+	local brakingAcceleration = math.clamp(
+		downwardSpeed * downwardSpeed / (2 * brakingDistance),
+		0,
+		GROUND_MAX_BRAKE
+	)
+	return proximity * GROUND_ASSIST_ACCELERATION + brakingAcceleration
+end
+
+local function updateSwing(deltaTime)
+	local anchorPosition = getAnchorPosition()
+
+	if not anchorPosition then
+		stopSwing()
+		return
+	end
+
+	local fromAnchor = rootPart.Position - anchorPosition
+	local distance = fromAnchor.Magnitude
+
+	if distance < 1 then
+		stopSwing()
+		return
+	end
+
+	local outward = fromAnchor.Unit
+	local velocity = rootPart.AssemblyLinearVelocity
+	local speed = velocity.Magnitude
+	local radialVelocity = velocity:Dot(outward)
+	local tangentVelocity = velocity - outward * radialVelocity
+	local tangentSpeed = tangentVelocity.Magnitude
+	local swingElapsed = os.clock() - swingStartedAt
+	local mass = rootPart.AssemblyMass
+	local force = Vector3.yAxis * mass * workspace.Gravity * SWING_GRAVITY_COMPENSATION
+
+	if speed > swingPeakSpeed then
+		swingPeakSpeed = speed
+		local horizontalTravel = getHorizontalDirection(velocity)
+		if horizontalTravel then swingTravelDirection = horizontalTravel end
+	end
+
+    local velocity = rootPart.AssemblyLinearVelocity
+    local speed = velocity.Magnitude
+
+    wind_sfx.Volume += (math.clamp(speed / 350, 0, 1) * 1 - wind_sfx.Volume) * deltaTime * 3
+
+	local tensionStart = swingRopeLength * (1 - ROPE_SLACK)
+	local tensionRange = math.max(2, swingRopeLength * (ROPE_SLACK + ROPE_ELASTICITY))
+	local tensionAlpha = smoothStep((distance - tensionStart) / tensionRange)
+	local stretch = math.max(0, distance - swingRopeLength)
+	local outwardSpeed = math.max(0, radialVelocity)
+
+	local springAcceleration = stretch * ROPE_STIFFNESS
+		+ outwardSpeed * ROPE_DAMPING * tensionAlpha
+
+	local centripetalAcceleration = tangentSpeed * tangentSpeed / math.max(distance, 1)
+
+	local tensionAcceleration = math.clamp(
+		(springAcceleration + centripetalAcceleration * ROPE_CENTRIPETAL_STRENGTH) * tensionAlpha,
+		0,
+		ROPE_MAX_TENSION_ACCELERATION
+	)
+
+	force -= outward * mass * tensionAcceleration
+
+	local cameraDirection = getCameraForward()
+	local cameraTangent = projectOntoPlane(cameraDirection, outward)
+	local forwardTangent = projectOntoPlane(getHorizontalForward(), outward)
+
+	if forwardTangent.Magnitude < 0.05 then forwardTangent = cameraTangent end
+	if forwardTangent.Magnitude > 0.05 then forwardTangent = forwardTangent.Unit end
+    
+	local momentumDirection
+
+	if tangentSpeed > 3 then
+		momentumDirection = tangentVelocity.Unit
+	elseif forwardTangent.Magnitude > 0.05 then
+		momentumDirection = forwardTangent
+	end
+
+	if swingAscentStarted and forwardTangent.Magnitude > 0.05 then
+		local ascentGuide = projectOntoPlane(
+			forwardTangent * 0.8 + Vector3.yAxis,
+			outward
+		)
+
+		if ascentGuide.Magnitude > 0.05 then
+			ascentGuide = ascentGuide.Unit
+			if momentumDirection then
+				local blendedDirection = momentumDirection * 0.35 + ascentGuide * 0.65
+				if blendedDirection.Magnitude > 0.05 then
+					momentumDirection = blendedDirection.Unit
+				end
+			else
+				momentumDirection = ascentGuide
+			end
+		end
+	end
+
+	if momentumDirection then
+		local speedDeficit = math.max(0, SWING_TARGET_SPEED - tangentSpeed)
+		local driveAcceleration = SWING_ACCELERATION + speedDeficit * SWING_SPEED_GAIN
+		force += momentumDirection * mass * driveAcceleration
+		if outwardSpeed > 0 and tensionAlpha > 0 then
+			force += momentumDirection * mass * outwardSpeed * ROPE_RADIAL_CONVERSION * tensionAlpha
+		end
+	end
+
+	if velocity.Y < 0 and forwardTangent.Magnitude > 0.05 then
+		force += forwardTangent * mass * math.min(100, -velocity.Y * SWING_FALL_TO_FORWARD)
+	end
+
+	local forwardInput, sideInput = getInputStrengths()
+	local moveDirection = projectOntoPlane(humanoid.MoveDirection, outward)
+
+	if moveDirection.Magnitude > 0.05 then
+		local inputMultiplier = forwardInput > 0 and SWING_FORWARD_INPUT_MULTIPLIER or 1
+		force += moveDirection.Unit * mass * SWING_STEERING_STRENGTH * inputMultiplier
+	end
+
+	if sideInput ~= 0 then
+		local camera = getCamera()
+		if camera then
+			local sideDirection = projectOntoPlane(camera.CFrame.RightVector, outward)
+			if sideDirection.Magnitude > 0.05 then
+				force += sideDirection.Unit * mass * SWING_STEERING_STRENGTH * sideInput
+			end
+		end
+	end
+
+	if cameraTangent.Magnitude > 0.05 then
+		local cameraInfluence = cameraTangent.Unit
+		local verticalInfluence = math.abs(cameraInfluence.Y) * SWING_VERTICAL_STEERING
+		force += cameraInfluence * mass * (SWING_CAMERA_STEERING + verticalInfluence)
+	end
+
+	if forwardInput < 0 and tangentSpeed > 3 then
+		force -= tangentVelocity.Unit * mass * SWING_BRAKE_ACCELERATION
+	end
+
+	if velocity.Y <= APEX_DESCENT_SPEED then swingHadDescent = true end
+
+	local availableDrop = math.max(2, swingStartHeight - GROUND_CLEARANCE)
+	local ascentTriggerDrop = math.min(APEX_ASSIST_TRIGGER_DROP, availableDrop)
+
+	local shouldBeginAscent = velocity.Y >= APEX_ASCENT_SPEED
+		or swingElapsed >= APEX_ASSIST_TRIGGER_TIME
+			and rootPart.Position.Y <= swingStartHeight - ascentTriggerDrop
+
+	if swingHadDescent and not swingAscentStarted and shouldBeginAscent then
+		swingAscentStarted = true
+		swingAscentStartHeight = rootPart.Position.Y
+	end
+
+	if swingAscentStarted then
+		local heightRange = math.max(1, swingTargetApexHeight - swingAscentStartHeight)
+		local heightProgress = math.clamp((rootPart.Position.Y - swingAscentStartHeight) / heightRange, 0, 1)
+		local easedProgress = smoothStep(heightProgress)
+
+		local desiredUpwardSpeed = APEX_INITIAL_UPWARD_SPEED
+			+ (APEX_FINAL_UPWARD_SPEED - APEX_INITIAL_UPWARD_SPEED) * easedProgress
+
+		local upwardDeficit = math.max(0, desiredUpwardSpeed - velocity.Y)
+
+		local assistAcceleration = math.clamp(
+			upwardDeficit * APEX_ASSIST_RESPONSE,
+			0,
+			APEX_ASSIST_MAX_ACCELERATION
+		)
+
+		force += Vector3.yAxis * mass * assistAcceleration
+		force += Vector3.yAxis
+			* mass
+			* workspace.Gravity
+			* APEX_GRAVITY_COMPENSATION
+
+		if forwardTangent.Magnitude > 0.05 then
+			local retainedMomentum = swingPeakSpeed * APEX_MOMENTUM_RETENTION
+			local momentumDeficit = math.max(0, retainedMomentum - tangentSpeed)
+			local forwardAcceleration = APEX_FORWARD_ACCELERATION
+				+ momentumDeficit * APEX_MOMENTUM_GAIN
+			force += forwardTangent
+				* mass
+				* forwardAcceleration
+				* (0.55 + heightProgress * 0.45)
+		end
+
+		if rootPart.Position.Y >= swingTargetApexHeight and swingElapsed >= APEX_MIN_SWING_TIME then
+			stopSwing("Apex")
+			return
+		end
+
+		if previousSwingVerticalVelocity > APEX_CREST_SPEED
+			and velocity.Y <= APEX_CREST_SPEED
+			and heightProgress >= 0.82
+			and swingElapsed >= APEX_MIN_SWING_TIME
+		then
+			stopSwing("Apex")
+			return
+		end
+	end
+
+	previousSwingVerticalVelocity = velocity.Y
+
+	local groundAssist = getGroundAssist(velocity)
+
+	if groundAssist > 0 then force += Vector3.yAxis * mass * groundAssist end
+
+	if speed > SWING_SOFT_SPEED_CAP then
+		force -= velocity.Unit * mass * (speed - SWING_SOFT_SPEED_CAP) * SWING_SPEED_CAP_DAMPING
+	end
+
+	if speed > SWING_MAX_SPEED then
+		force -= velocity.Unit * mass * (speed - SWING_MAX_SPEED) * SWING_SPEED_CAP_DAMPING * 4
+	end
+
+	vectorForce.Force = force
+	updateOrientation(velocity)
+
+	if activeTrack and activeTrack.IsPlaying and not swingAnimationPaused then
+		activeTrack:AdjustSpeed(math.clamp(speed / 65, 0.75, 1.65))
+	end
+
+	if isAirborne() then
+		groundedTime = 0
+	else
+		groundedTime += deltaTime
+		if shiftHeld and groundedTime > 0.06 then humanoid:ChangeState(Enum.HumanoidStateType.Freefall) end
+		if groundedTime > GROUND_RELEASE_GRACE then
+			stopSwing()
+			return
+		end
+	end
+
+	if swingElapsed >= APEX_MAX_SWING_TIME then stopSwing("Apex") end
+end
+
+local function updateZip(deltaTime)
+	local anchorPosition = getAnchorPosition()
+
+	if not anchorPosition then
+		stopZip(false)
+		return
+	end
+
+	local offset = anchorPosition - rootPart.Position
+	local distance = offset.Magnitude
+
+	if distance <= ZIP_STOP_DISTANCE or os.clock() - zipStartedAt >= ZIP_MAX_DURATION then
+		stopZip(true)
+		return
+    end
+
+	local direction = offset.Unit
+	local velocity = rootPart.AssemblyLinearVelocity
+	local alongSpeed = velocity:Dot(direction)
+	local lateralVelocity = velocity - direction * alongSpeed
+	local desiredAlongSpeed = math.clamp(distance * 3.4, ZIP_MIN_SPEED, ZIP_MAX_SPEED)
+
+	desiredAlongSpeed = math.max(desiredAlongSpeed, alongSpeed)
+
+	local desiredVelocity = direction * desiredAlongSpeed + lateralVelocity * ZIP_LATERAL_RETENTION
+	local acceleration = (desiredVelocity - velocity) * ZIP_RESPONSE
+
+	acceleration += Vector3.yAxis * workspace.Gravity * ZIP_GRAVITY_COMPENSATION
+
+	if acceleration.Magnitude > ZIP_ACCELERATION then acceleration = acceleration.Unit * ZIP_ACCELERATION end
+
+    local speed = velocity.Magnitude
+
+    wind_sfx.Volume += (math.clamp(speed / 350, 0, 1) * 1 - wind_sfx.Volume) * deltaTime * 3
+
+	vectorForce.Force = acceleration * rootPart.AssemblyMass
+	updateOrientation(velocity.Magnitude > 3 and velocity or direction)
+
+	if activeTrack and activeTrack.IsPlaying then
+		activeTrack:AdjustSpeed(math.clamp(velocity.Magnitude / 80, 0.85, 1.55))
+	end
+end
+
+local function updateAirControl(deltaTime)
+	if activeMode or not canUseWebs() or not isAirborne() then return end
+	local moveDirection = humanoid.MoveDirection
+	if moveDirection.Magnitude < 0.05 then return end
+	local velocity = rootPart.AssemblyLinearVelocity
+	local horizontalVelocity = projectOntoPlane(velocity, Vector3.yAxis)
+	local desiredDirection = getHorizontalDirection(moveDirection)
+	if not desiredDirection then return end
+	local acceleration = desiredDirection * AIR_CONTROL_ACCELERATION
+	if horizontalVelocity.Magnitude > 2 then
+		local currentDirection = horizontalVelocity.Unit
+		local steering = desiredDirection - currentDirection * desiredDirection:Dot(currentDirection)
+		if steering.Magnitude > 0.05 then acceleration += steering.Unit * AIR_STEERING_ACCELERATION end
+		if horizontalVelocity.Magnitude >= AIR_CONTROL_SPEED_LIMIT
+			and desiredDirection:Dot(currentDirection) > 0
+		then
+			acceleration -= currentDirection * acceleration:Dot(currentDirection)
+		end
+	end
+	rootPart:ApplyImpulse(acceleration * rootPart.AssemblyMass * deltaTime)
+end
+
+local function onShiftAction(_, inputStateValue)
+	if UserInputService:GetFocusedTextBox() then return Enum.ContextActionResult.Pass end
+	if inputStateValue == Enum.UserInputState.Begin then
+		if not canUseWebs() then return Enum.ContextActionResult.Pass end
+		if activeMode == "Zip" then stopZip(false) end
+		shiftHeld = true
+		shiftPending = true
+		shiftPressedAt = os.clock()
+		nextTargetAttemptAt = shiftPressedAt + SHIFT_HOLD_TIME
+		return Enum.ContextActionResult.Sink
+	end
+	if inputStateValue == Enum.UserInputState.End or inputStateValue == Enum.UserInputState.Cancel then
+		if not shiftHeld then return Enum.ContextActionResult.Pass end
+		local heldDuration = os.clock() - shiftPressedAt
+		shiftHeld = false
+		if activeMode == "Swing" then
+			shiftPending = false
+			stopSwing("Manual")
+		elseif shiftPending and heldDuration <= TAP_MAX_TIME and canUseWebs() then
+			shiftPending = false
+			startZip()
+		else
+			shiftPending = false
+		end
+		return Enum.ContextActionResult.Sink
+	end
+	return Enum.ContextActionResult.Sink
+end
+
+local function onJumpAction(_, inputStateValue)
+	if activeMode ~= "Swing" then return Enum.ContextActionResult.Pass end
+	if inputStateValue == Enum.UserInputState.Begin then stopSwing("Jump") end
+	return Enum.ContextActionResult.Sink
+end
+
+local function getEffectAlpha(value, minimum, maximum)
+	return smoothStep((value - minimum) / (maximum - minimum))
+end
+
+local function updateCameraEffects(deltaTime)
+	local camera = getCamera()
+	if not camera then return end
+	local velocity = rootPart.AssemblyLinearVelocity
+	local speed = velocity.Magnitude
+	local fovAlpha = getEffectAlpha(speed, FOV_START_SPEED, FOV_FULL_SPEED)
+	local minimumFov = math.max(baseFieldOfView, FOV_MIN)
+	local targetFieldOfView = minimumFov + (FOV_MAX - minimumFov) * fovAlpha
+	local fovBlend = 1 - math.exp(-FOV_RESPONSE * deltaTime)
+	camera.FieldOfView += (targetFieldOfView - camera.FieldOfView) * fovBlend
+	local acceleration = (velocity - previousCameraVelocity).Magnitude / math.max(deltaTime, 1 / 240)
+	previousCameraVelocity = velocity
+	local speedShake = getEffectAlpha(speed, SHAKE_START_SPEED, SHAKE_FULL_SPEED)
+	local accelerationShake = getEffectAlpha(acceleration, SHAKE_ACCELERATION_START, SHAKE_ACCELERATION_FULL)
+	local targetShake = math.max(speedShake * 0.72, accelerationShake * 0.45)
+	local shakeBlend = 1 - math.exp(-SHAKE_RESPONSE * deltaTime)
+	currentShakeIntensity += (targetShake - currentShakeIntensity) * shakeBlend
+	if currentShakeIntensity < 0.001 then return end
+	local phase = os.clock() * SHAKE_FREQUENCY
+	local positionOffset = Vector3.new(
+		math.noise(phase, 0, 0),
+		math.noise(0, phase, 0),
+		0
+	) * SHAKE_MAX_POSITION * currentShakeIntensity
+	local rotationOffset = Vector3.new(
+		math.noise(phase, 3, 7),
+		math.noise(5, phase, 11),
+		math.noise(13, 17, phase)
+	) * SHAKE_MAX_ROTATION * currentShakeIntensity
+	camera.CFrame *= CFrame.new(positionOffset)
+		* CFrame.Angles(rotationOffset.X, rotationOffset.Y, rotationOffset.Z)
+end
+
+character:SetAttribute("IsWebSwinging", false)
+character:SetAttribute("IsWebZipping", false)
+
+ContextActionService:BindActionAtPriority(
+	SHIFT_ACTION,
+	onShiftAction,
+	false,
+	ACTION_PRIORITY,
+	SWING_KEY
+)
+ContextActionService:BindActionAtPriority(
+	JUMP_ACTION,
+	onJumpAction,
+	false,
+	ACTION_PRIORITY,
+	Enum.KeyCode.Space
+)
+RunService:BindToRenderStep(
+	CAMERA_ACTION,
+	Enum.RenderPriority.Camera.Value + 1,
+	updateCameraEffects
+)
+
+RunService.Heartbeat:Connect(function(deltaTime)
+	if destroyed or humanoid.Health <= 0 then return end
+	if activeMode and isClimbing() then
+		stopActiveMode()
+		shiftPending = false
+	end
+	local now = os.clock()
+	if shiftHeld and shiftPending and not activeMode
+		and now - shiftPressedAt >= SHIFT_HOLD_TIME
+		and now >= nextTargetAttemptAt
+		and canUseWebs() and isAirborne()
+	then
+		nextTargetAttemptAt = now + TARGET_RETRY_INTERVAL
+		if startSwing() then shiftPending = false end
+	end
+	if activeMode == "Swing" then
+		updateSwingAnimationHold()
+		updateSwing(math.min(deltaTime, 1 / 20))
+	elseif activeMode == "Zip" then
+		updateZip(deltaTime)
+	else
+		updateAirControl(math.min(deltaTime, 1 / 20))
+	end
+end)
+
+humanoid.Died:Connect(function()
+	shiftHeld = false
+	shiftPending = false
+	stopActiveMode()
+end)
+
+character.Destroying:Connect(function()
+	destroyed = true
+	shiftHeld = false
+	shiftPending = false
+	stopActiveMode()
+	ContextActionService:UnbindAction(SHIFT_ACTION)
+	ContextActionService:UnbindAction(JUMP_ACTION)
+	RunService:UnbindFromRenderStep(CAMERA_ACTION)
+	local camera = getCamera()
+	if camera then camera.FieldOfView = baseFieldOfView end
+end)
+
+local humanoid = character:WaitForChild("Humanoid")
+local animator = humanoid:WaitForChild("Animator")
+
+local IDLE_ANIMATION_ID = "rbxassetid://119758813315245"
+local JUMP_ANIMATION_ID = "rbxassetid://137947353570049"
+local FALL_ANIMATION_ID = "rbxassetid://87487899978506"
+
+local CUSTOM_PRIORITY = Enum.AnimationPriority.Action3
+local FADE_TIME = 0.1
+
+local function createAnimation(name, animationId, looped)
+	local animation = Instance.new("Animation")
+	animation.Name = name
+	animation.AnimationId = animationId
+
+	local track = animator:LoadAnimation(animation)
+	track.Priority = CUSTOM_PRIORITY
+	track.Looped = looped
+
+	return track
+end
+
+local idleTrack = createAnimation("CustomIdle", IDLE_ANIMATION_ID, true)
+local jumpTrack = createAnimation("CustomJump", JUMP_ANIMATION_ID, false)
+local fallTrack = createAnimation("CustomFall", FALL_ANIMATION_ID, true)
+
+local currentTrack = nil
+
+local function stopCurrent()
+	if currentTrack and currentTrack.IsPlaying then
+		currentTrack:Stop(FADE_TIME)
+	end
+
+	currentTrack = nil
+end
+
+local function playTrack(track)
+	if currentTrack == track then
+		return
+	end
+
+	stopCurrent()
+
+	currentTrack = track
+	track:Play(FADE_TIME, 1, 1)
+end
+
+local function updateMovementAnimation()
+	local state = humanoid:GetState()
+	local moving = humanoid.MoveDirection.Magnitude > 0.05
+
+	if state == Enum.HumanoidStateType.Jumping then
+        if character:GetAttribute('ClimbModeEnabled') == true then
+			stopCurrent()
+        else
+            playTrack(fallTrack)
+        end
+	elseif state == Enum.HumanoidStateType.Freefall then
+        if character:GetAttribute('ClimbModeEnabled') == true then
+			stopCurrent()
+        else
+            playTrack(fallTrack)
+        end
+	elseif state == Enum.HumanoidStateType.Running
+		or state == Enum.HumanoidStateType.RunningNoPhysics
+		or state == Enum.HumanoidStateType.Landed then
+
+		if moving or character:GetAttribute('ClimbModeEnabled') == true then
+			stopCurrent()
+		else
+			playTrack(idleTrack)
+		end
+	end
+end
+
+character:GetAttributeChangedSignal("ClimbModeEnabled"):Connect(function()
+	updateMovementAnimation()
+end)
+
+humanoid.StateChanged:Connect(function(_, newState)
+	updateMovementAnimation()
+end)
+
+humanoid:GetPropertyChangedSignal("MoveDirection"):Connect(function()
+	updateMovementAnimation()
+end)
+
+updateMovementAnimation()
