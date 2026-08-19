@@ -15,11 +15,15 @@ game:GetService('Players').PlayerAdded:Connect(function(Plr)
     if Plr:FindFirstChild("IS_MOD") then return Alert(Plr) end
 end)
 
+TextChatService = game:GetService("TextChatService")
+chatWindowConfig = TextChatService:FindFirstChild("ChatWindowConfiguration")
 Players = game:GetService("Players")
 ContextActionService = game:GetService("ContextActionService")
 RunService = game:GetService("RunService")
 UserInputService = game:GetService("UserInputService")
 CollectionService = game:GetService("CollectionService")
+
+chatWindowConfig.Enabled = true
 
 player = Players.LocalPlayer
 character = player.Character or player.CharacterAdded:Wait()
@@ -590,7 +594,7 @@ function playBackflip()
 		return
 	end
 
-	if loadedBackflipId ~= backflipAnimation.AnimationId then
+	--if loadedBackflipId ~= backflipAnimation.AnimationId then
 		if backflipTrack then
 			backflipTrack:Stop(BACKFLIP_FADE_TIME)
 			backflipTrack:Destroy()
@@ -609,7 +613,7 @@ function playBackflip()
 		loadedBackflipId = backflipAnimation.AnimationId
 		backflipTrack.Looped = false
 		backflipTrack.Priority = Enum.AnimationPriority.Action4
-	end
+	--end
 
 	if backflipTrack.IsPlaying then
 		backflipTrack:Stop(BACKFLIP_FADE_TIME)
@@ -624,6 +628,7 @@ function playBackflip()
     task.spawn(function()
         while repeating == true do
             if character:GetAttribute("IsWebSwinging") == true or character:GetAttribute("IsWebZipping") == true or character:GetAttribute("ClimbModeEnabled") == true then
+                character:SetAttribute('IsBackflip', false)
                 backflipTrack:Stop()
                 return
             end
@@ -2311,7 +2316,7 @@ CONVEX_LANDING_DISTANCE = 3
 CONCAVE_TRIGGER_DISTANCE = 2
 CORNER_TRANSITION_RATE = 3.5
 MAX_TARGET_LEAD = 1.25
-CLIMB_SPEED = 24
+CLIMB_SPEED = 18
 MIN_WALL_WIDTH = 6
 MIN_WALL_HEIGHT = 6
 SURFACE_CHANGE_THRESHOLD = 0.82
