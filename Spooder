@@ -40,6 +40,8 @@ player.CharacterAdded:Connect(function(c) -- characterlol
     rootPart = character:WaitForChild("HumanoidRootPart")
     animator = humanoid:FindFirstChildOfClass("Animator") or humanoid:WaitForChild("Animator")
 
+    task.wait()
+
     SwingAnimation = Instance.new('Animation', character); SwingAnimation.Name = 'SwingAnimation'; SwingAnimation.AnimationId = 'rbxassetid://97674654492880' --'rbxassetid://94315611946161'
 
     ZipAnimation = Instance.new('Animation', character); ZipAnimation.Name = 'WebZipAnimation'; ZipAnimation.AnimationId = 'rbxassetid://76247085271690' --'rbxassetid://100103306715371'
@@ -49,6 +51,14 @@ player.CharacterAdded:Connect(function(c) -- characterlol
     ClimbAnimation = Instance.new('Animation', character); ClimbAnimation.Name = 'ClimbAnimation'; ClimbAnimation.AnimationId = 'rbxassetid://130656380253826'
 
     climbTrack = humanoid:LoadAnimation(ClimbAnimation)
+
+    IDLE_ANIMATION_ID = "rbxassetid://119758813315245"
+    JUMP_ANIMATION_ID = "rbxassetid://137947353570049"
+    FALL_ANIMATION_ID = "rbxassetid://87487899978506"
+
+    idleTrack = createAnimation("CustomIdle", IDLE_ANIMATION_ID, true)
+    jumpTrack = createAnimation("CustomJump", JUMP_ANIMATION_ID, false)
+    fallTrack = createAnimation("CustomFall", FALL_ANIMATION_ID, true)
 
     character:SetAttribute("ClimbModeEnabled", false)
     character:SetAttribute("IsWallClimbing", false)
@@ -2248,13 +2258,13 @@ function updateMovementAnimation()
 	local moving = humanoid.MoveDirection.Magnitude > 0.05
 
 	if state == Enum.HumanoidStateType.Jumping then
-        if character:GetAttribute('ClimbModeEnabled') == true then
+        if player.Character:GetAttribute('ClimbModeEnabled') == true then
 			stopCurrent()
         else
             playTrack(fallTrack)
         end
 	elseif state == Enum.HumanoidStateType.Freefall then
-        if character:GetAttribute('ClimbModeEnabled') == true then
+        if player.Character:GetAttribute('ClimbModeEnabled') == true then
 			stopCurrent()
         else
             playTrack(fallTrack)
@@ -2263,7 +2273,7 @@ function updateMovementAnimation()
 		or state == Enum.HumanoidStateType.RunningNoPhysics
 		or state == Enum.HumanoidStateType.Landed then
 
-		if moving or character:GetAttribute('ClimbModeEnabled') == true then
+		if moving or player.Character:GetAttribute('ClimbModeEnabled') == true then
 			stopCurrent()
 		else
 			playTrack(idleTrack)
