@@ -702,6 +702,7 @@ ContextActionService:BindActionAtPriority(
 	ACTION_PRIORITY,
 	SUPER_JUMP_KEY
 )
+
 ContextActionService:BindActionAtPriority(
 	SLINGSHOT_ACTION,
 	onSlingshotAction,
@@ -709,6 +710,7 @@ ContextActionService:BindActionAtPriority(
 	ACTION_PRIORITY,
 	SLINGSHOT_KEY
 )
+
 RunService:BindToRenderStep(
 	CAMERA_PRE_ACTION,
 	Enum.RenderPriority.Camera.Value - 1,
@@ -957,6 +959,24 @@ UserInputService.InputBegan:Connect(function(Input, Typing)
 
 	if Input.KeyCode == Enum.KeyCode.H then
 		ToggleSpiderSense()
+    elseif Input.KeyCode == Enum.KeyCode.J then
+        local Anim = Instance.new('Animation')
+        Anim.AnimationId = 'rbxassetid://79825461507846'
+
+        local TrackPOSE = humanoid:LoadAnimation(Anim)
+        TrackPOSE.Priority = Enum.AnimationPriority.Action4
+        TrackPOSE:Play()
+
+        task.spawn(function()
+            while TrackPOSE.IsPlaying do
+                task.wait()
+
+                if humanoid.MoveDirection.Magnitude > 0.05 then
+                    TrackPOSE:Stop()
+                    break
+                end
+            end
+        end)
 	end
 end)
 
