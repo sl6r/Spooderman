@@ -24,7 +24,14 @@ CollectionService = game:GetService("CollectionService")
 player = Players.LocalPlayer
 character = player.Character or player.CharacterAdded:Wait()
 
-player.CharacterAdded:Connect(function(c)
+respawned = false
+
+player.CharacterAdded:Connect(function(c) -- characterlol
+    loadedTracks = {}
+    respawned = true
+    destroyed = false
+    previousWebSwinging = false
+    
     character = c
 
     task.wait()
@@ -33,18 +40,80 @@ player.CharacterAdded:Connect(function(c)
     rootPart = character:WaitForChild("HumanoidRootPart")
     animator = humanoid:FindFirstChildOfClass("Animator") or humanoid:WaitForChild("Animator")
 
-    SwingAnimation = Instance.new('Animation', character); SwingAnimation.Name = 'SwingAnimation'; SwingAnimation.AnimationId = 'rbxassetid://94315611946161'
+    SwingAnimation = Instance.new('Animation', character); SwingAnimation.Name = 'SwingAnimation'; SwingAnimation.AnimationId = 'rbxassetid://97674654492880' --'rbxassetid://94315611946161'
 
-    ZipAnimation = Instance.new('Animation', character); ZipAnimation.Name = 'WebZipAnimation'; ZipAnimation.AnimationId = 'rbxassetid://100103306715371'
+    ZipAnimation = Instance.new('Animation', character); ZipAnimation.Name = 'WebZipAnimation'; ZipAnimation.AnimationId = 'rbxassetid://76247085271690' --'rbxassetid://100103306715371'
 
     BackAnimation = Instance.new('Animation', character); BackAnimation.Name = 'BackAnimation'; BackAnimation.AnimationId = 'rbxassetid://74012998347103'
+
+    ClimbAnimation = Instance.new('Animation', character); ClimbAnimation.Name = 'ClimbAnimation'; ClimbAnimation.AnimationId = 'rbxassetid://130656380253826'
+
+    climbTrack = humanoid:LoadAnimation(ClimbAnimation)
+
+    character:SetAttribute("ClimbModeEnabled", false)
+    character:SetAttribute("IsWallClimbing", false)
+    character:SetAttribute("CameraClimbRotationEnabled", false)
+
+    character:SetAttribute("IsSuperJumpCharging", false)
+	character:SetAttribute("IsSlingshotCharging", false)
+
+    character:SetAttribute("IsWebSwinging", false)
+    character:SetAttribute("IsWebZipping", false)
+
+    character:GetAttributeChangedSignal("ClimbModeEnabled"):Connect(function()
+	    updateMovementAnimation()
+    end)
+
+	humanoid.StateChanged:Connect(function(_, newState)
+	    updateMovementAnimation()
+    end)
+
+    humanoid:GetPropertyChangedSignal("MoveDirection"):Connect(function()
+    	updateMovementAnimation()
+    end)
+
+    updateMovementAnimation()
+
+    previousCameraVelocity = rootPart.AssemblyLinearVelocity
+    savedAutoRotate = humanoid.AutoRotate
+
+    character.Destroying:Connect(function()
+	    clearCharge()
+	    stopSlingshot()
+	    superJumpEffectEndAt = 0
+	    removeAppliedFovBonus()
+	    if webSwingConnection then
+	    	webSwingConnection:Disconnect()
+	    end
+	    if diedConnection then
+		    diedConnection:Disconnect()
+	    end
+    end)
+
+    webSwingConnection = character:GetAttributeChangedSignal("IsWebSwinging"):Connect(function()
+	    local isWebSwinging = character:GetAttribute("IsWebSwinging") == true
+
+	    if previousWebSwinging and not isWebSwinging then
+            if math.random(1,100) >= 60 then
+                playBackflip()
+            end
+	    end
+
+	    previousWebSwinging = isWebSwinging
+    end)
+
+    diedConnection = humanoid.Died:Connect(function()
+	    clearCharge()
+	    stopSlingshot()
+	    superJumpEffectEndAt = 0
+    end)
 end)
 
 humanoid = character:WaitForChild("Humanoid")
 rootPart = character:WaitForChild("HumanoidRootPart")
 animator = humanoid:FindFirstChildOfClass("Animator") or humanoid:WaitForChild("Animator")
 
-local swingController = character:FindFirstChild("SpiderSwingController")
+--local swingController = character:FindFirstChild("SpiderSwingController")
 local backflipAnimation = Instance.new('Animation'); backflipAnimation.AnimationId = 'rbxassetid://74012998347103'
 local SUPER_JUMP_KEY = Enum.KeyCode.T
 local SUPER_JUMP_CHARGE_TIME = 2
@@ -57,15 +126,15 @@ local SUPER_JUMP_EFFECT_DURATION = 0.8
 local SLINGSHOT_KEY = Enum.KeyCode.Y
 local SLINGSHOT_CHARGE_TIME = 1.5
 local SLINGSHOT_MIN_SPEED = 15
-local SLINGSHOT_MAX_SPEED = 240
+local SLINGSHOT_MAX_SPEED = 380
 local SLINGSHOT_MIN_UPWARD_SPEED = 0
-local SLINGSHOT_MAX_UPWARD_SPEED = 72
-local SLINGSHOT_CHARGE_POWER = 2.8
-local SLINGSHOT_UPWARD_BIAS = 0.08
-local SLINGSHOT_MAX_UPWARD_DIRECTION = 0.65
-local SLINGSHOT_FULL_SPEED_DISTANCE = 150
-local SLINGSHOT_DECELERATION = 2.2
-local SLINGSHOT_END_SPEED = 42
+local SLINGSHOT_MAX_UPWARD_SPEED = 98
+local SLINGSHOT_CHARGE_POWER = 3
+local SLINGSHOT_UPWARD_BIAS = 0.2
+local SLINGSHOT_MAX_UPWARD_DIRECTION = 0.75
+local SLINGSHOT_FULL_SPEED_DISTANCE = 240
+local SLINGSHOT_DECELERATION = 1.2--2
+local SLINGSHOT_END_SPEED = 128
 local SLINGSHOT_MAX_DURATION = 5
 
 local CHARGE_FOV_BONUS = 10
@@ -375,9 +444,11 @@ local function releaseCharge(kind)
 	if chargeKind ~= kind then
 		return false
 	end
+
 	local chargeAlpha = getChargeAlpha(os.clock())
+
 	clearCharge()
-    print(chargeAlpha)
+
 	if kind == "SuperJump" then
 		launchSuperJump(chargeAlpha)
 	else
@@ -386,6 +457,7 @@ local function releaseCharge(kind)
         end
 		launchSlingshot(chargeAlpha)
 	end
+
 	return true
 end
 
@@ -491,7 +563,7 @@ local function updateCameraEffects(deltaTime)
 		* CFrame.Angles(rotationOffset.X, rotationOffset.Y, rotationOffset.Z)
 end
 
-local function playBackflip()
+function playBackflip()
 	if destroyed or humanoid.Health <= 0 or humanoid.FloorMaterial ~= Enum.Material.Air then
 		return
 	end
@@ -634,6 +706,7 @@ RunService:BindToRenderStep(
 )
 
 heartbeatConnection = RunService.Heartbeat:Connect(updateTraversal)
+
 webSwingConnection = character:GetAttributeChangedSignal("IsWebSwinging"):Connect(function()
 	local isWebSwinging = character:GetAttribute("IsWebSwinging") == true
 	if previousWebSwinging and not isWebSwinging then
@@ -643,6 +716,7 @@ webSwingConnection = character:GetAttributeChangedSignal("IsWebSwinging"):Connec
 	end
 	previousWebSwinging = isWebSwinging
 end)
+
 diedConnection = humanoid.Died:Connect(function()
 	clearCharge()
 	stopSlingshot()
@@ -650,7 +724,22 @@ diedConnection = humanoid.Died:Connect(function()
 end)
 
 character.Destroying:Connect(function()
-	destroyed = true
+	clearCharge()
+	stopSlingshot()
+	superJumpEffectEndAt = 0
+	removeAppliedFovBonus()
+
+	if webSwingConnection then
+		webSwingConnection:Disconnect()
+	end
+
+    if diedConnection then
+	    diedConnection:Disconnect()
+    end
+end)
+
+--[[character.Destroying:Connect(function()
+	--destroyed = true
 	clearCharge()
 	stopSlingshot()
 	superJumpEffectEndAt = 0
@@ -671,8 +760,8 @@ character.Destroying:Connect(function()
 	if backflipTrack then
 		backflipTrack:Stop(0)
 		backflipTrack:Destroy()
-	end]]
-end)
+	end]
+end)]]
 
 -- ESP
 
@@ -964,7 +1053,7 @@ RunService.RenderStepped:Connect(function()
 	end
 end)
 
- wind_sfx = Instance.new('Sound', character.Head)
+wind_sfx = Instance.new('Sound', character.Head)
 wind_sfx.SoundId = 'rbxassetid://5113213873'
 wind_sfx.RollOffMaxDistance = math.huge
 wind_sfx.Volume = 0
@@ -1224,28 +1313,34 @@ function getCursorAirTarget()
 	return ray.Origin + ray.Direction.Unit * ZIP_AIR_DISTANCE
 end
 
-SwingAnimation = Instance.new('Animation', character); SwingAnimation.Name = 'SwingAnimation'; SwingAnimation.AnimationId = 'rbxassetid://94315611946161'
+SwingAnimation = Instance.new('Animation', character); SwingAnimation.Name = 'SwingAnimation'; SwingAnimation.AnimationId = 'rbxassetid://97674654492880' --'rbxassetid://94315611946161'
 
-ZipAnimation = Instance.new('Animation', character); ZipAnimation.Name = 'WebZipAnimation'; ZipAnimation.AnimationId = 'rbxassetid://100103306715371'
+ZipAnimation = Instance.new('Animation', character); ZipAnimation.Name = 'WebZipAnimation'; ZipAnimation.AnimationId = 'rbxassetid://76247085271690' --'rbxassetid://100103306715371'
 
 BackAnimation = Instance.new('Animation', character); BackAnimation.Name = 'BackAnimation'; BackAnimation.AnimationId = 'rbxassetid://74012998347103'
 
 
 function getAnimationTrack(name)
 	local existing = loadedTracks[name]
+
 	if existing then
 		return existing
 	end
+
 	local animation = character:FindFirstChild(name)
+
 	if not animation or not animation:IsA("Animation") or animation.AnimationId == "" then
 		return nil
 	end
+
 	local success, track = pcall(function()
 		return animator:LoadAnimation(animation)
 	end)
+
 	if not success or not track then
 		return nil
 	end
+
 	track.Priority = Enum.AnimationPriority.Movement
 	loadedTracks[name] = track
 	return track
@@ -1254,10 +1349,12 @@ end
 function stopAnimation()
 	if activeTrack then
 		activeTrack:AdjustSpeed(1)
+
 		if activeTrack.IsPlaying then
 			activeTrack:Stop(0.16)
 		end
 	end
+
 	activeTrack = nil
 	swingAnimationPaused = false
 end
@@ -1271,12 +1368,23 @@ function playAnimation(name)
 	end
 
 	if activeTrack ~= track then
-		stopAnimation()
-		activeTrack = track
+        local t = 0
+        --if name == 'WebZipAnimation' then print('changed') t = 1 end
+        --stopAnimation()
+        task.delay(t, function()
+            stopAnimation()
+		    activeTrack = track
+
+            if t ~= 0 then
+                stopAnimation()
+            end
+        end)
 	end
 
+    local FadeTime = .16
+
     if not track.IsPlaying then
-		track:Play(0.16, 1, 1)
+		track:Play(FadeTime, 1, 1)
 	end
 
     track.Priority = Enum.AnimationPriority.Action4
@@ -1284,25 +1392,30 @@ function playAnimation(name)
 	if name == "SwingAnimation" then
 		swingAnimationPaused = false
 		track.Looped = false
-        track.Priority = Enum.AnimationPriority.Action4
 		track:AdjustSpeed(.3)
 	end
 end
 
 function updateSwingAnimationHold()
 	local track = loadedTracks.SwingAnimation
+
 	if activeMode ~= "Swing" or activeTrack ~= track or not track or swingAnimationPaused then
 		return
 	end
+
 	local length = track.Length
+
 	if length <= 0 then
 		return
 	end
+
 	local holdPosition = math.max(0, length - SWING_ANIMATION_HOLD_OFFSET)
+
 	if track.TimePosition >= holdPosition or not track.IsPlaying then
 		if not track.IsPlaying then
 			track:Play(0, 1, 1)
 		end
+
 		track.TimePosition = holdPosition
 		track:AdjustSpeed(0)
 		swingAnimationPaused = true
@@ -1310,9 +1423,12 @@ function updateSwingAnimationHold()
 end
 
 function ensurePhysicsObjects()
-	if forceAttachment then
+	if forceAttachment and respawned == false then
 		return
 	end
+
+    respawned = false
+
 	forceAttachment = Instance.new("Attachment")
 	forceAttachment.Name = "SpiderSwingAttachment"
 	forceAttachment.Parent = rootPart
@@ -1597,10 +1713,13 @@ function startZip()
 	enableActivePhysics()
 	playAnimation("WebZipAnimation")
 	humanoid:ChangeState(Enum.HumanoidStateType.Freefall)
+
 	local offset = anchorPosition - rootPart.Position
+
 	if offset.Magnitude > 1 then
 		rootPart.AssemblyLinearVelocity += offset.Unit * ZIP_START_IMPULSE
 	end
+
 	return true
 end
 
@@ -2166,35 +2285,6 @@ end)
 
 updateMovementAnimation()
 
-Players = game:GetService("Players")
-ContextActionService = game:GetService("ContextActionService")
-RunService = game:GetService("RunService")
-UserInputService = game:GetService("UserInputService")
-CollectionService = game:GetService("CollectionService")
-
-player = Players.LocalPlayer
-character = player.Character or player.CharacterAdded:Wait()
-
-player.CharacterAdded:Connect(function(c)
-    character = c
-
-    task.wait()
-
-    humanoid = character:WaitForChild("Humanoid")
-    rootPart = character:WaitForChild("HumanoidRootPart")
-    animator = humanoid:FindFirstChildOfClass("Animator") or humanoid:WaitForChild("Animator")
-
-    SwingAnimation = Instance.new('Animation', character); SwingAnimation.Name = 'SwingAnimation'; SwingAnimation.AnimationId = 'rbxassetid://94315611946161'
-
-    ZipAnimation = Instance.new('Animation', character); ZipAnimation.Name = 'WebZipAnimation'; ZipAnimation.AnimationId = 'rbxassetid://100103306715371'
-
-    BackAnimation = Instance.new('Animation', character); BackAnimation.Name = 'BackAnimation'; BackAnimation.AnimationId = 'rbxassetid://74012998347103'
-end)
-
-humanoid = character:WaitForChild("Humanoid")
-rootPart = character:WaitForChild("HumanoidRootPart")
-animator = humanoid:FindFirstChildOfClass("Animator") or humanoid:WaitForChild("Animator")
-
 TOGGLE_ACTION = "SpiderClimbToggle_" .. player.UserId
 CAMERA_TOGGLE_ACTION = "SpiderClimbCameraToggle_" .. player.UserId
 JUMP_ACTION = "SpiderClimbJump_" .. player.UserId
@@ -2204,14 +2294,14 @@ CAMERA_TOGGLE_KEY = Enum.KeyCode.V
 DETECTION_DISTANCE = 5
 FLOOR_DETECTION_DISTANCE = 6
 DETECTION_INTERVAL = 1 / 30
-WALL_OFFSET = .75
+WALL_OFFSET = 2.5 -- .75
 CORNER_OFFSET = 3
 CORNER_LANDING_DISTANCE = 1.6
 CONVEX_LANDING_DISTANCE = 3
 CONCAVE_TRIGGER_DISTANCE = 2
 CORNER_TRANSITION_RATE = 3.5
 MAX_TARGET_LEAD = 1.25
-CLIMB_SPEED = 16
+CLIMB_SPEED = 24
 MIN_WALL_WIDTH = 6
 MIN_WALL_HEIGHT = 6
 SURFACE_CHANGE_THRESHOLD = 0.82
@@ -2220,9 +2310,9 @@ NORMAL_RESPONSE = 16
 CAMERA_ROTATION_SPEED = 9
 POSITION_RESPONSE = 35
 ORIENTATION_RESPONSE = 80
-CLIMB_JUMP_BACKWARD_SPEED = 52
-CLIMB_JUMP_UPWARD_SPEED = 36
-CLIMB_JUMP_FORCE_MULTIPLIER = 1.15
+CLIMB_JUMP_BACKWARD_SPEED = 42
+CLIMB_JUMP_UPWARD_SPEED = 54
+CLIMB_JUMP_FORCE_MULTIPLIER = 1.46
 ACTION_PRIORITY = 3000
 
 local raycastParams = RaycastParams.new()
@@ -2264,7 +2354,10 @@ detectionAccumulator = DETECTION_INTERVAL
 cornerDetectionAccumulator = DETECTION_INTERVAL
 lastSurfaceTime = 0
 lastAnimationSpeed = -1
-climbTrack = nil
+
+ClimbAnimation = Instance.new('Animation', character); ClimbAnimation.Name = 'ClimbAnimation'; ClimbAnimation.AnimationId = 'rbxassetid://130656380253826'
+climbTrack = humanoid:LoadAnimation(ClimbAnimation)
+
 attachment = nil
 alignPosition = nil
 lalignOrientation = nil
@@ -2412,9 +2505,11 @@ function isClimbable(result)
 	end
 
 	local instance = result.Instance
+
 	if instance == workspace.Terrain then
 		return true
 	end
+
 	if not instance:IsA("BasePart") or not instance.CanCollide or isCharacterPart(instance) then
 		return false
 	end
@@ -2677,7 +2772,7 @@ function ensureAnimation()
 	if success then
 		climbTrack = track
 		climbTrack.Looped = true
-		climbTrack.Priority = Enum.AnimationPriority.Action
+		climbTrack.Priority = Enum.AnimationPriority.Action4
 	end
 	return climbTrack
 end
@@ -2738,15 +2833,18 @@ end
 
 local function disableCharacterCollisions()
 	table.clear(savedPartCollisions)
+
 	for _, descendant in character:GetDescendants() do
 		if descendant:IsA("BasePart") then
 			savedPartCollisions[descendant] = descendant.CanCollide
 			descendant.CanCollide = false
 		end
 	end
+
 	if collisionConnection then
 		collisionConnection:Disconnect()
 	end
+
 	collisionConnection = character.DescendantAdded:Connect(function(descendant)
 		if descendant:IsA("BasePart") and savedPartCollisions[descendant] == nil then
 			savedPartCollisions[descendant] = descendant.CanCollide
@@ -2768,11 +2866,13 @@ local function restoreCharacterCollisions()
 		collisionConnection:Disconnect()
 		collisionConnection = nil
 	end
+
 	for part, canCollide in savedPartCollisions do
 		if part.Parent then
 			part.CanCollide = canCollide
 		end
 	end
+
 	table.clear(savedPartCollisions)
 end
 
@@ -2844,9 +2944,11 @@ local function detach()
 	if alignPosition then
 		alignPosition.Enabled = false
 	end
+
 	if alignOrientation then
 		alignOrientation.Enabled = false
 	end
+
 	restoreCharacterCollisions()
 
 	humanoid.AutoRotate = savedAutoRotate
@@ -2864,6 +2966,7 @@ local function attach(result)
 	end
 
 	local right, up = getSurfaceBasis(result.Normal, Vector3.yAxis)
+
 	if not right then
 		return
 	end
@@ -2889,7 +2992,7 @@ local function attach(result)
 	rootPart.AssemblyAngularVelocity = Vector3.zero
 
 	alignPosition.Position = targetSurfacePoint + currentNormal * WALL_OFFSET
-	alignOrientation.CFrame = CFrame.fromMatrix(Vector3.zero, right, up, currentNormal)
+	alignOrientation.CFrame = CFrame.fromMatrix(Vector3.zero, right, up, currentNormal) * CFrame.Angles(math.rad(90), 0, 0) -- alignOrientation.CFrame = CFrame.fromMatrix(Vector3.zero, right, up, currentNormal) * CFrame.Angles(math.rad(90), 0, 0)
 	alignPosition.Enabled = true
 	alignOrientation.Enabled = true
 end
@@ -2904,7 +3007,9 @@ local function setMode(enabled)
 
 	if enabled then
 		setAnimationSpeed(0.55)
+
 		local supportingSurface = findSupportingSurface()
+
 		if supportingSurface then
 			attach(supportingSurface)
 		end
@@ -3073,12 +3178,13 @@ local function updateCornerTransition(deltaTime)
 		currentOffset = WALL_OFFSET
 		local endRight = currentUp:Cross(currentNormal).Unit
 		alignPosition.Position = transitionEndPosition
-		alignOrientation.CFrame = CFrame.fromMatrix(Vector3.zero, endRight, currentUp, currentNormal)
+		alignOrientation.CFrame = CFrame.fromMatrix(Vector3.zero, endRight, currentUp, currentNormal) * CFrame.Angles(math.rad(90), 0, 0) --alignOrientation.CFrame = CFrame.fromMatrix(Vector3.zero, endRight, currentUp, currentNormal)
 	end
 end
 
 local function updateAttached(deltaTime)
 	maintainCharacterCollisions()
+
 	if transitioning then
 		updateCornerTransition(deltaTime)
 		return
@@ -3087,10 +3193,12 @@ local function updateAttached(deltaTime)
 	refreshMovingSurface()
 
 	local projectedCurrentUp = projectOntoPlane(currentUp, currentNormal)
+
 	if projectedCurrentUp.Magnitude < 0.1 then
 		local _, fallbackUp = getSurfaceBasis(currentNormal, surfaceUp)
 		projectedCurrentUp = fallbackUp
 	end
+
 	currentUp = projectedCurrentUp.Unit
 	local right = currentUp:Cross(currentNormal).Unit
 
@@ -3099,10 +3207,13 @@ local function updateAttached(deltaTime)
 	local intendedSurfacePoint = targetSurfacePoint + moveDirection * CLIMB_SPEED * deltaTime
 	local rootSurfacePoint = rootPart.Position - currentNormal * currentOffset
 	local targetLead = projectOntoPlane(intendedSurfacePoint - rootSurfacePoint, currentNormal)
+
 	if targetLead.Magnitude > MAX_TARGET_LEAD then
 		intendedSurfacePoint -= targetLead - targetLead.Unit * MAX_TARGET_LEAD
 	end
+
 	local result = findCurrentSurface(intendedSurfacePoint, surfaceNormal)
+
 	if result and moveDirection.Magnitude > 0.05 then
 		cornerDetectionAccumulator += deltaTime
 		if cornerDetectionAccumulator >= DETECTION_INTERVAL then
@@ -3134,6 +3245,7 @@ local function updateAttached(deltaTime)
 	end
 
 	lastSurfaceTime = os.clock()
+
 	local oldSurfaceNormal = surfaceNormal
 	local newSurfaceNormal = result.Normal.Unit
 
@@ -3144,30 +3256,37 @@ local function updateAttached(deltaTime)
 	end
 
 	local transportedUp = projectOntoPlane(surfaceUp, newSurfaceNormal)
+
 	if transportedUp.Magnitude < 0.1 then
 		local _, fallbackUp = getSurfaceBasis(newSurfaceNormal, currentUp)
 		transportedUp = fallbackUp
 	end
+
 	local desiredSurfaceUp = transportedUp.Unit
+
 	if cameraRotationEnabled then
 		local cameraUp = getCameraDesiredUp(newSurfaceNormal)
 		if cameraUp then
 			desiredSurfaceUp = cameraUp
 		end
 	end
+
 	setSurface(result, desiredSurfaceUp)
 
 	local alpha = math.clamp(deltaTime * NORMAL_RESPONSE, 0, 1)
 	local blendedNormal = currentNormal:Lerp(surfaceNormal, alpha)
+
 	if blendedNormal.Magnitude > 0.1 then
 		currentNormal = blendedNormal.Unit
 	end
 
 	local desiredCurrentUp = projectOntoPlane(surfaceUp, currentNormal)
+
 	if desiredCurrentUp.Magnitude < 0.1 then
 		local _, fallbackUp = getSurfaceBasis(currentNormal, currentUp)
 		desiredCurrentUp = fallbackUp
 	end
+
 	if cameraRotationEnabled then
 		currentUp = rotateUpToward(
 			currentUp,
@@ -3184,10 +3303,11 @@ local function updateAttached(deltaTime)
 		end
 		currentUp = blendedUp.Unit
 	end
+
 	right = currentUp:Cross(currentNormal).Unit
 
 	alignPosition.Position = targetSurfacePoint + currentNormal * currentOffset
-	alignOrientation.CFrame = CFrame.fromMatrix(Vector3.zero, right, currentUp, currentNormal)
+	alignOrientation.CFrame = CFrame.fromMatrix(Vector3.zero, right, currentUp, currentNormal) * CFrame.Angles(math.rad(90), 0, 0) -- alignOrientation.CFrame = CFrame.fromMatrix(Vector3.zero, right, currentUp, currentNormal)
 	rootPart.AssemblyAngularVelocity = Vector3.zero
 
 	if input.Magnitude > 0.05 then
@@ -3266,6 +3386,6 @@ character.Destroying:Connect(function()
 end)
 
 game:GetService('RunService').RenderStepped:Connect(function()
-    Player.Character.Humanoid.WalkSpeed = 34
-    Player.Character.Humanoid.JumpPower = 74
+    character.Humanoid.WalkSpeed = 34
+    character.Humanoid.JumpPower = 74
 end)
