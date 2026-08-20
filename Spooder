@@ -4,6 +4,8 @@ function Alert(Plr)
         Text = "Moderator Detected",
         Duration = 5,
     })
+
+	local Sound = Instance.new('Sound', game:GetService('SoundService')); Sound.SoundId = 'rbxassetid://1570162306'; Sound.Volume = 5; Sound.RollOffMode = Enum.RollOffMode.Linear; Sound.RollOffMaxDistance = 100000; Sound:Play()
 end
 
 for i,Plr in next, game:GetService('Players'):GetPlayers() do
@@ -12,7 +14,7 @@ end
 
 game:GetService('Players').PlayerAdded:Connect(function(Plr)
     task.wait(3)
-    if Plr:FindFirstChild("IS_MOD") then return Alert(Plr) end
+    if Plr:FindFirstChild("IS_MOD") then Alert(Plr) end
 end)
 
 TextChatService = game:GetService("TextChatService")
