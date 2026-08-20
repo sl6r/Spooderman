@@ -1213,7 +1213,72 @@ RunService.RenderStepped:Connect(function()
 			local Distance = (MyRoot.Position - Root.Position).Magnitude
 			local DistanceNumber = math.floor(Distance)
 
-			Data.Info.Text =
+			local Knocked = false
+			local Dead = false
+
+			task.spawn(function()
+				if Character == nil or not Character:FindFirstChild('Humanoid') or Character:FindFirstChild('Humanoid').Health == 0 or Character.BodyEffects["Dead"].Value == true or Character.BodyEffects["K.O"].Value == true or Character:FindFirstChild('GRABBING_CONSTRAINT') then
+					Knocked = true
+				end
+				
+				return
+			end)
+
+			task.spawn(function()
+				if Character == nil or not Character:FindFirstChild('Humanoid') or Character:FindFirstChild('Humanoid').Health == 0 or Character.BodyEffects["Dead"].Value == true then
+					Dead = true
+				end
+
+				return
+			end)
+
+			if Dead then
+				Data.Info.Text = "DEAD - " .. DistanceNumber .. " studs"
+
+				Data.Highlight.OutlineColor = Color3.fromRGB(0, 0, 0) -- Color3.fromRGB(255, 45, 45)
+				Data.Highlight.FillColor = Color3.fromRGB(50, 50, 50) -- Color3.fromRGB(80, 15, 15)
+
+				Data.Highlight.OutlineTransparency = 0
+				Data.Highlight.FillTransparency = 0.35
+			elseif Knocked then
+				Data.Info.Text = "KNOCKED - " .. DistanceNumber .. " studs"
+
+				Data.Highlight.OutlineColor = Color3.fromRGB(255, 190, 45)
+				Data.Highlight.FillColor = Color3.fromRGB(80, 55, 15)
+
+				Data.Highlight.OutlineTransparency = 0
+				Data.Highlight.FillTransparency = 0.35
+			else
+				Data.Info.Text =
+					math.floor(Humanoid.Health) ..
+					"/" ..
+					math.floor(Humanoid.MaxHealth) ..
+					" - " ..
+					DistanceNumber ..
+					" studs"
+
+				local DistanceAlpha = math.clamp(1 - (Distance / 150), 0, 1)
+
+				Data.Highlight.OutlineTransparency =
+					0.65 -- - (DistanceAlpha * 0.65)
+
+				Data.Highlight.FillTransparency =
+					0.55 -- - (DistanceAlpha * 0.2)
+
+				if HasGun(Player) then
+					Data.Highlight.OutlineColor = Color3.fromRGB(255, 115, 35) -- Color3.fromRGB(255, 65, 30)
+					Data.Highlight.FillColor =  Color3.fromRGB(75, 20, 25)
+
+					if Distance < ClosestGunDistance then
+						ClosestGunDistance = Distance
+					end
+				else
+					Data.Highlight.OutlineColor = Color3.fromRGB(255, 115, 35)
+					Data.Highlight.FillColor = Color3.fromRGB(15, 35, 75)
+				end
+			end
+
+			--[[Data.Info.Text =
 				math.floor(Humanoid.Health) ..
 				"/" ..
 				math.floor(Humanoid.MaxHealth) ..
@@ -1239,7 +1304,7 @@ RunService.RenderStepped:Connect(function()
 			else
 				Data.Highlight.OutlineColor = Color3.fromRGB(255, 115, 35)
 				Data.Highlight.FillColor = Color3.fromRGB(15, 35, 75)
-			end
+			end]]
 		else
 			RemoveESP(Player)
 		end
