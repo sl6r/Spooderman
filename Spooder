@@ -7,7 +7,7 @@ function Alert(Plr)
 end
 
 for i,Plr in next, game:GetService('Players'):GetPlayers() do
-    if Plr:FindFirstChild("IS_MOD") then return Alert(Plr) end
+    if Plr:FindFirstChild("IS_MOD") then Alert(Plr) end
 end
 
 game:GetService('Players').PlayerAdded:Connect(function(Plr)
@@ -998,6 +998,48 @@ function ToggleSpiderSense()
 	end
 end
 
+local function createMarker(position)
+    local part = Instance.new("Part", workspace)
+    part.Name = "MouseMarker"
+    part.Size = Vector3.new(1, 1, 1)
+    part.Position = position
+    part.Anchored = true
+    part.CanCollide = false
+    part.Transparency = 1
+
+    local billboard = Instance.new("BillboardGui", part)
+    billboard.Size = UDim2.new(0, 150, 0, 50)
+    billboard.StudsOffset = Vector3.new(0, 2, 0)
+    billboard.AlwaysOnTop = true
+
+    local label = Instance.new("TextLabel", billboard)
+    label.Size = UDim2.new(1, 0, 1, 0)
+    label.BackgroundTransparency = 1
+    label.TextColor3 = Color3.new(1, 1, 1)
+    label.TextStrokeTransparency = 0
+    label.TextScaled = true
+    label.Font = Enum.Font.GothamBold
+    label.Text = "0 studs"
+
+    local highlight = Instance.new("SelectionSphere", part)
+    highlight.Adornee = part
+    highlight.Color3 = Color3.fromRGB(0, 200, 255)
+
+    local updateConn
+    updateConn = game:GetService('RunService').RenderStepped:Connect(function()
+        local character = player.Character
+        if character and character.PrimaryPart then
+            local dist = (character.PrimaryPart.Position - part.Position).Magnitude
+            label.Text = string.format("%.1f studs", dist)
+        end
+    end)
+
+    task.delay(10, function()
+        updateConn:Disconnect()
+        part:Destroy()
+    end)
+end
+
 UserInputService.InputBegan:Connect(function(Input, Typing)
 	if Typing then
 		return
@@ -1023,6 +1065,19 @@ UserInputService.InputBegan:Connect(function(Input, Typing)
                 end
             end
         end)
+	elseif Input.UserInputType == Enum.UserInputType.MouseButton3 then
+        local mousePos = UserInputService:GetMouseLocation()
+        local viewportRay = workspace.CurrentCamera:ViewportPointToRay(mousePos.X, mousePos.Y)
+
+        local raycastParams2 = RaycastParams.new()
+        raycastParams2.FilterDescendantsInstances = {player.Character}
+        raycastParams2.FilterType = Enum.RaycastFilterType.Exclude
+
+        local result = workspace:Raycast(viewportRay.Origin, viewportRay.Direction * 1000, raycastParams2)
+
+        if result then
+            createMarker(result.Position)
+        end
 	end
 end)
 
