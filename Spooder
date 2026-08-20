@@ -24,6 +24,11 @@ ContextActionService = game:GetService("ContextActionService")
 RunService = game:GetService("RunService")
 UserInputService = game:GetService("UserInputService")
 CollectionService = game:GetService("CollectionService")
+actualIdleAnim = "rbxassetid://119758813315245"
+
+if _G.Idle ~= nil and _G.Idle == 2 then
+	actualIdleAnim = "rbxassetid://123888267685221"
+end
 
 chatWindowConfig.Enabled = true
 idleAnimationEnabled = true
@@ -70,7 +75,7 @@ player.CharacterAdded:Connect(function(c) -- characterlol
 
 	raycastParams.FilterDescendantsInstances = {character}
 
-    IDLE_ANIMATION_ID = "rbxassetid://119758813315245"
+    IDLE_ANIMATION_ID = actualIdleAnim
     JUMP_ANIMATION_ID = "rbxassetid://137947353570049"
     FALL_ANIMATION_ID = "rbxassetid://87487899978506"
 
@@ -145,7 +150,10 @@ rootPart = character:WaitForChild("HumanoidRootPart")
 animator = humanoid:FindFirstChildOfClass("Animator") or humanoid:WaitForChild("Animator")
 
 --local swingController = character:FindFirstChild("SpiderSwingController")
-local backflipAnimation = Instance.new('Animation'); backflipAnimation.AnimationId = 'rbxassetid://74012998347103'
+bf_a1 = Instance.new('Animation'); bf_a1.AnimationId = 'rbxassetid://74012998347103'
+bf_a2 = Instance.new('Animation'); bf_a2.AnimationId = 'rbxassetid://76240339944801'
+
+local backflipAnimation = {bf_a1, bf_a2}
 local SUPER_JUMP_KEY = Enum.KeyCode.T
 local SUPER_JUMP_CHARGE_TIME = 2
 local SUPER_JUMP_MIN_UPWARD_SPEED = 46
@@ -235,7 +243,7 @@ game:GetService('UserInputService').InputBegan:Connect(function(Input, IsTyping)
 
         task.spawn(function()
             while repeating == true do
-                if character:GetAttribute("IsWebSwinging") == true or character:GetAttribute("IsWebZipping") == true or character:GetAttribute("ClimbModeEnabled") == true then
+                if character:GetAttribute("IsWebSwinging") == true or character:GetAttribute("IsWebZipping") == true or character:GetAttribute("ClimbModeEnabled") == true or character:FindFirstChild('Humanoid'):GetState() ~= Enum.HumanoidStateType.Freefall then
                     Track123:Stop()
                     return
                 end
@@ -253,7 +261,7 @@ game:GetService('UserInputService').InputBegan:Connect(function(Input, IsTyping)
     elseif Input.KeyCode == Enum.KeyCode.X then
         AnimCD = true
         local Anim = Instance.new('Animation')
-        Anim.AnimationId = 'rbxassetid://131057503397598'
+        Anim.AnimationId = 'rbxassetid://131556235813350' -- 'rbxassetid://131057503397598'
 
         local TrackABC = player.Character.Humanoid:LoadAnimation(Anim)
         TrackABC.Priority = Enum.AnimationPriority.Action4
@@ -263,7 +271,7 @@ game:GetService('UserInputService').InputBegan:Connect(function(Input, IsTyping)
 
         task.spawn(function()
             while repeating == true do
-                if character:GetAttribute("IsWebSwinging") == true or character:GetAttribute("IsWebZipping") == true or character:GetAttribute("ClimbModeEnabled") == true then
+                if character:GetAttribute("IsWebSwinging") == true or character:GetAttribute("IsWebZipping") == true or character:GetAttribute("ClimbModeEnabled") == true or character:FindFirstChild('Humanoid'):GetState() ~= Enum.HumanoidStateType.Freefall then
                     TrackABC:Stop()
                     return
                 end
@@ -272,12 +280,12 @@ game:GetService('UserInputService').InputBegan:Connect(function(Input, IsTyping)
             return
         end)
 
-		task.delay(1.3, function()
+		task.delay(1.5, function()
 			TrackABC:Stop()
             AnimCD = false
             TrackABC:Destroy()
 		end)
-	elseif Input.KeyCode == Enum.KeyCode.C then
+	elseif Input.KeyCode == Enum.KeyCode.V then
         AnimCD = true
         local Anim = Instance.new('Animation')
         Anim.AnimationId = 'rbxassetid://100489683135054'
@@ -291,7 +299,7 @@ game:GetService('UserInputService').InputBegan:Connect(function(Input, IsTyping)
             while TrackRoll.IsPlaying do
 				task.wait()
 
-                if character == nil or not character:FindFirstChild('Humanoid') or character:GetAttribute("IsWebSwinging") == true or character:GetAttribute("IsWebZipping") == true or character:GetAttribute("ClimbModeEnabled") == true or not game:GetService('UserInputService'):IsKeyDown(Enum.KeyCode.C) or character:FindFirstChild('Humanoid'):GetState() ~= Enum.HumanoidStateType.Freefall then
+                if character == nil or not character:FindFirstChild('Humanoid') or character:GetAttribute("IsWebSwinging") == true or character:GetAttribute("IsWebZipping") == true or character:GetAttribute("ClimbModeEnabled") == true or not game:GetService('UserInputService'):IsKeyDown(Enum.KeyCode.V) or character:FindFirstChild('Humanoid'):GetState() ~= Enum.HumanoidStateType.Freefall then
                 	TrackRoll:Stop()
             		AnimCD = false
             		TrackRoll:Destroy()
@@ -300,6 +308,36 @@ game:GetService('UserInputService').InputBegan:Connect(function(Input, IsTyping)
             end
             return
         end)
+	elseif Input.KeyCode == Enum.KeyCode.C then
+        AnimCD = true
+        local Anim = Instance.new('Animation')
+        Anim.AnimationId = 'rbxassetid://104012866072534'
+
+        local TrackLaying = player.Character.Humanoid:LoadAnimation(Anim)
+        TrackLaying.Priority = Enum.AnimationPriority.Action4
+        TrackLaying:Play()
+
+		TrackLaying.TimePosition = 3.5
+    	TrackLaying:AdjustSpeed(0)
+
+        local repeating = true
+
+        task.spawn(function()
+            while repeating == true do
+                if character:GetAttribute("IsWebSwinging") == true or character:GetAttribute("IsWebZipping") == true or character:GetAttribute("ClimbModeEnabled") == true or character:FindFirstChild('Humanoid'):GetState() ~= Enum.HumanoidStateType.Freefall then
+                    TrackLaying:Stop()
+                    return
+                end
+                task.wait()
+            end
+            return
+        end)
+
+		task.delay(1.5, function()
+			TrackLaying:Stop()
+            AnimCD = false
+            TrackLaying:Destroy()
+		end)
     end
 end)
 
@@ -632,9 +670,9 @@ function playBackflip()
 		return
 	end
 
-	if not backflipAnimation or backflipAnimation.AnimationId == "" then
+	--[[if not backflipAnimation or backflipAnimation.AnimationId == "" then
 		return
-	end
+	end]]
 
 	if canBackflip == false then
 		canBackflip = true
@@ -643,7 +681,33 @@ function playBackflip()
 		canBackflip = false 
 	end
 
-	--if loadedBackflipId ~= backflipAnimation.AnimationId then
+	if backflipTrack then
+		backflipTrack:Stop(BACKFLIP_FADE_TIME)
+		backflipTrack:Destroy()
+		backflipTrack = nil
+	end
+
+	local chance = math.random(1,2)
+
+	local success, track = pcall(function()
+		return animator:LoadAnimation(backflipAnimation[chance])
+	end)
+
+	if not success or not track then
+		return
+	end
+
+	backflipTrack = track
+	--loadedBackflipId = backflipAnimation.AnimationId
+	backflipTrack.Looped = false
+	backflipTrack.Priority = Enum.AnimationPriority.Action4
+
+	if chance == 2 then
+    	backflipTrack.TimePosition = .2
+    	backflipTrack:AdjustSpeed(1.9)
+	end
+
+	--[[if loadedBackflipId ~= backflipAnimation.AnimationId then
 		if backflipTrack then
 			backflipTrack:Stop(BACKFLIP_FADE_TIME)
 			backflipTrack:Destroy()
@@ -662,7 +726,7 @@ function playBackflip()
 		loadedBackflipId = backflipAnimation.AnimationId
 		backflipTrack.Looped = false
 		backflipTrack.Priority = Enum.AnimationPriority.Action4
-	--end
+	--end]]
 
 	if backflipTrack.IsPlaying then
 		backflipTrack:Stop(BACKFLIP_FADE_TIME)
@@ -2340,7 +2404,7 @@ character.Destroying:Connect(function()
 	if camera then camera.FieldOfView = baseFieldOfView end
 end)
 
-IDLE_ANIMATION_ID = "rbxassetid://119758813315245"
+IDLE_ANIMATION_ID = actualIdleAnim
 JUMP_ANIMATION_ID = "rbxassetid://137947353570049"
 FALL_ANIMATION_ID = "rbxassetid://87487899978506"
 
@@ -2431,7 +2495,7 @@ CAMERA_TOGGLE_ACTION = "SpiderClimbCameraToggle_" .. player.UserId
 JUMP_ACTION = "SpiderClimbJump_" .. player.UserId
 MOVE_ACTION = "SpiderClimbMove_" .. player.UserId
 CLIMB_KEY = Enum.KeyCode.F
-CAMERA_TOGGLE_KEY = Enum.KeyCode.V
+CAMERA_TOGGLE_KEY = Enum.KeyCode.B
 DETECTION_DISTANCE = 5
 FLOOR_DETECTION_DISTANCE = 6
 DETECTION_INTERVAL = 1 / 30
