@@ -656,6 +656,7 @@ local function updateCameraEffects(deltaTime)
 end
 
 canBackflip = true
+backflipNum = 1
 
 function playBackflip()
 	if destroyed or humanoid.Health <= 0 or humanoid.FloorMaterial ~= Enum.Material.Air then
@@ -687,10 +688,8 @@ function playBackflip()
 		backflipTrack = nil
 	end
 
-	local chance = math.random(1,2)
-
 	local success, track = pcall(function()
-		return animator:LoadAnimation(backflipAnimation[chance])
+		return animator:LoadAnimation(backflipAnimation[backflipNum])
 	end)
 
 	if not success or not track then
@@ -702,9 +701,12 @@ function playBackflip()
 	backflipTrack.Looped = false
 	backflipTrack.Priority = Enum.AnimationPriority.Action4
 
-	if chance == 2 then
+	if backflipNum == 2 then
+		backflipNum = 1
     	backflipTrack.TimePosition = .2
     	backflipTrack:AdjustSpeed(1.9)
+	else
+		backflipNum = 2
 	end
 
 	--[[if loadedBackflipId ~= backflipAnimation.AnimationId then
@@ -740,7 +742,7 @@ function playBackflip()
 
     task.spawn(function()
         while repeating == true do
-            if character:GetAttribute("IsWebSwinging") == true or character:GetAttribute("IsWebZipping") == true or character:GetAttribute("ClimbModeEnabled") == true then
+            if character:GetAttribute("IsWebSwinging") == true or character:GetAttribute("IsWebZipping") == true or character:GetAttribute("ClimbModeEnabled") == true or character:FindFirstChild('Humanoid'):GetState() ~= Enum.HumanoidStateType.Freefall then
                 character:SetAttribute('IsBackflip', false)
                 backflipTrack:Stop()
                 return
@@ -1134,6 +1136,10 @@ UserInputService.InputBegan:Connect(function(Input, Typing)
         end)
 	elseif Input.KeyCode == Enum.KeyCode.P then
 		idleAnimationEnabled = not idleAnimationEnabled
+
+		if idleAnimationEnabled == false then
+			stopCurrent()
+		end
 	elseif Input.UserInputType == Enum.UserInputType.MouseButton3 then
         local mousePos = UserInputService:GetMouseLocation()
         local viewportRay = workspace.CurrentCamera:ViewportPointToRay(mousePos.X, mousePos.Y)
