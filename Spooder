@@ -26,6 +26,7 @@ UserInputService = game:GetService("UserInputService")
 CollectionService = game:GetService("CollectionService")
 
 chatWindowConfig.Enabled = true
+idleAnimationEnabled = true
 
 player = Players.LocalPlayer
 character = player.Character or player.CharacterAdded:Wait()
@@ -1067,6 +1068,8 @@ UserInputService.InputBegan:Connect(function(Input, Typing)
                 end
             end
         end)
+	elseif Input.KeyCode == Enum.KeyCode.P then
+		idleAnimationEnabled = not idleAnimationEnabled
 	elseif Input.UserInputType == Enum.UserInputType.MouseButton3 then
         local mousePos = UserInputService:GetMouseLocation()
         local viewportRay = workspace.CurrentCamera:ViewportPointToRay(mousePos.X, mousePos.Y)
@@ -2401,7 +2404,7 @@ function updateMovementAnimation()
 		or state == Enum.HumanoidStateType.RunningNoPhysics
 		or state == Enum.HumanoidStateType.Landed then
 
-		if moving or player.Character:GetAttribute('ClimbModeEnabled') == true then
+		if moving or player.Character:GetAttribute('ClimbModeEnabled') == true or idleAnimationEnabled == false then
 			stopCurrent()
 		else
 			playTrack(idleTrack)
