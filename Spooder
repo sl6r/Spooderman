@@ -31,14 +31,13 @@ if _G.Idle ~= nil and _G.Idle == 2 then
 end
 
 chatWindowConfig.Enabled = true
-idleAnimationEnabled = true
-
 player = Players.LocalPlayer
 character = player.Character or player.CharacterAdded:Wait()
-
-respawned = false
-
+player.CameraMaxZoomDistance = 99999
 oldMouseIcon = game:GetService("UserInputService").MouseIcon
+
+idleAnimationEnabled = true
+respawned = false
 
 UserInputService:GetPropertyChangedSignal("MouseBehavior"):Connect(function()
     if UserInputService.MouseBehavior == Enum.MouseBehavior.LockCenter then
@@ -1554,7 +1553,7 @@ function createMarker(position)
 	label.TextScaled = false
 	label.TextSize = 18
 	label.TextWrapped = true
-	label.Font = Enum.Font.GothamBold
+	label.FontFace = Font.fromId(12187360881, Enum.FontWeight.Regular, Enum.FontStyle.Normal)
 	label.Text = "0"
 	label.ZIndex = 2
 
