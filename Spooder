@@ -145,6 +145,9 @@ player.CharacterAdded:Connect(function(c) -- characterlol
     end)
 end)
 
+folder = Instance.new("Folder", workspace)
+winds = {}
+
 humanoid = character:WaitForChild("Humanoid")
 rootPart = character:WaitForChild("HumanoidRootPart")
 animator = humanoid:FindFirstChildOfClass("Animator") or humanoid:WaitForChild("Animator")
@@ -152,6 +155,260 @@ animator = humanoid:FindFirstChildOfClass("Animator") or humanoid:WaitForChild("
 --local swingController = character:FindFirstChild("SpiderSwingController")
 bf_a1 = Instance.new('Animation'); bf_a1.AnimationId = 'rbxassetid://74012998347103'
 bf_a2 = Instance.new('Animation'); bf_a2.AnimationId = 'rbxassetid://76240339944801'
+
+function createPart()
+	if not character.Parent or not rootPart.Parent then
+		return
+	end
+
+	local part = Instance.new("Part")
+	part.Name = "Wind"
+	part.Material = Enum.Material.SmoothPlastic
+	part.Color = Color3.new(1, 1, 1)
+	part.Size = Vector3.new(0.08, 0.08, 2)
+	part.Transparency = 0.99
+	part.Anchored = false
+	part.CanCollide = false
+	part.CanTouch = false
+	part.CanQuery = false
+	part.CastShadow = false
+	part.Massless = true
+
+	local side = math.random(-50, 50) / 10
+	local distance = math.random(-65, -20) / 10
+	local height = math.random(-20, 45) / 10
+	local offset = Vector3.new(side, height, distance)
+
+	part.CFrame = rootPart.CFrame * CFrame.new(offset)
+	part.Parent = folder
+
+	local weld = Instance.new("Weld")
+	weld.Name = "WindWeld"
+	weld.Part0 = rootPart
+	weld.Part1 = part
+	weld.C0 = CFrame.new(offset)
+	weld.C1 = CFrame.new()
+	weld.Parent = part
+	winds[#winds + 1] = {part = part, weld = weld, offset = offset, targetLength = math.random(20, 140) / 10, elapsed = 0, lifetime = math.random(14, 28) / 100}
+end
+
+spawnTimer = math.random(1, 4) / 100
+
+RunService.Heartbeat:Connect(function(dt)
+	if not character.Parent or not rootPart.Parent then
+		return
+	end
+
+	local velocity = rootPart.AssemblyLinearVelocity
+	local speed = velocity.Magnitude
+	if speed >= 85 then
+		spawnTimer -= dt
+		local maxWinds = math.clamp(math.floor((speed - 70) / 4) + 12, 12, 35)
+		if #winds < maxWinds and spawnTimer <= 0 then
+			createPart()
+			spawnTimer = math.random(1, 4) / 100
+		end
+	else
+		spawnTimer = math.random(1, 4) / 100
+	end
+
+	local falling = -velocity.Y >= 35
+	for i = #winds, 1, -1 do
+		local wind = winds[i]
+		if not wind.part.Parent then
+			table.remove(winds, i)
+			continue
+		end
+
+		wind.elapsed += dt
+
+		local rotationCFrame = falling and CFrame.Angles(math.rad(-90), 0, 0) or CFrame.new()
+
+		if wind.elapsed <= 0.045 then
+			local alpha = wind.elapsed / 0.045
+			alpha = alpha * alpha * (3 - 2 * alpha)
+			local length = 2 + (wind.targetLength - 2) * alpha
+			wind.part.Size = Vector3.new(0.08, 0.08, length)
+			wind.weld.C0 = CFrame.new(wind.offset + Vector3.new(0, 0, alpha * 9)) * rotationCFrame
+		elseif wind.elapsed <= wind.lifetime then
+			local alpha = (wind.elapsed - 0.045) / (wind.lifetime - 0.045)
+			alpha = math.clamp(alpha, 0, 1)
+			alpha = alpha * alpha * (3 - 2 * alpha)
+			wind.part.Size = Vector3.new(0.08, 0.08, wind.targetLength)
+			wind.part.Transparency = 0.82 + 0.18 * alpha
+			wind.weld.C0 = CFrame.new(wind.offset + Vector3.new(0, 0, 9 + alpha * 3)) * rotationCFrame
+		else
+			wind.part:Destroy()
+			table.remove(winds, i)
+		end
+	end
+end)
+
+effect = nil
+active = false
+
+function createSense(offsetY, left, slant, sideOffset, top)
+	local head = character:WaitForChild("Head")
+
+	local model = Instance.new("Model")
+	model.Name = "SpideySense"
+	model.Parent = character
+
+	local highlight = Instance.new("Highlight")
+	highlight.Name = "SenseHighlight"
+	highlight.FillColor = Color3.fromRGB(51, 0, 255)
+	highlight.FillTransparency = 0
+	highlight.OutlineColor = Color3.fromRGB(148, 55, 255)
+	highlight.OutlineTransparency = 0
+	highlight.DepthMode = Enum.HighlightDepthMode.Occluded
+	highlight.Adornee = model
+	highlight.Parent = model
+
+	function makePart(name, size)
+		local part = Instance.new("Part")
+		part.Name = name
+		part.Size = size
+		part.Material = Enum.Material.Neon
+		part.Color = Color3.fromRGB(51, 0, 255)
+		part.Transparency = 0
+		part.CanCollide = false
+		part.CanTouch = false
+		part.CanQuery = false
+		part.CastShadow = false
+		part.Massless = true
+		part.Anchored = false
+		part.Parent = model
+		return part
+	end
+
+	local sizeMultiplier = math.random(80, 120) / 100
+
+	local part1 = makePart(
+		"SensePart1",
+		Vector3.new(0.1, 0.013, 0.01) * sizeMultiplier
+	)
+
+	local part2 = makePart(
+		"SensePart2",
+		Vector3.new(0.1, 0.016, 0.016) * sizeMultiplier
+	)
+
+	local part3 = makePart(
+		"SensePart3",
+		Vector3.new(0.1, 0.016, 0.016) * sizeMultiplier
+	)
+
+	local upVector = head.CFrame.UpVector
+	local rightVector = head.CFrame.RightVector
+	local forwardVector = head.CFrame.LookVector
+
+	local side = left and -1 or 1
+	local basePosition
+	local directions
+
+	if top then
+		basePosition = head.Position + upVector * 1.25 + forwardVector * -0.1
+
+		local rotation = math.rad(math.random(-35, 35))
+
+		directions = {
+			(upVector + rightVector * math.sin(rotation)).Unit,
+			(upVector + rightVector * math.sin(rotation * 0.7)).Unit,
+			(upVector + rightVector * math.sin(rotation * 0.9)).Unit
+		}
+	else
+		basePosition = head.Position + rightVector * side * sideOffset + forwardVector * -0.05 + upVector * offsetY
+
+		local sideVector = rightVector * side
+		local baseCFrame = CFrame.fromMatrix(basePosition, sideVector, upVector)
+
+		directions = {
+			(baseCFrame * CFrame.Angles(0, 0, math.rad(math.random(-25, 25) + slant))).RightVector,
+			(baseCFrame * CFrame.Angles(0, 0, math.rad(math.random(-25, 25) + slant))).RightVector,
+			(baseCFrame * CFrame.Angles(0, 0, math.rad(math.random(-25, 25) + slant))).RightVector
+		}
+	end
+
+	local point1 = basePosition
+	local point2 = point1 + directions[1] * (part1.Size.X - 0.004)
+	local point3 = point2 + directions[2] * (part2.Size.X - 0.004)
+	local point4 = point3 + directions[3] * (part3.Size.X - 0.004)
+
+	function placePart(part, startPoint, endPoint)
+		local direction = (endPoint - startPoint).Unit
+		local midpoint = (startPoint + endPoint) / 2
+		part.CFrame = CFrame.lookAt(midpoint, midpoint + direction, forwardVector) * CFrame.Angles(0, math.rad(90), 0)
+	end
+
+	placePart(part1, point1, point2)
+	placePart(part2, point2, point3)
+	placePart(part3, point3, point4)
+
+	function weld2(part)
+		local weld = Instance.new("Weld")
+		weld.Part0 = head
+		weld.Part1 = part
+		weld.C0 = head.CFrame:ToObjectSpace(part.CFrame)
+		weld.Parent = part
+	end
+
+	weld2(part1)
+	weld2(part2)
+	weld2(part3)
+
+	return model
+end
+
+function randomizeSense()
+	if effect then
+		effect:Destroy()
+	end
+
+	effect = Instance.new("Folder", workspace)
+	effect.Name = "SpideySenses"
+
+	createSense(1.15, false, 32, 0.3).Parent = effect
+	createSense(0.75, false, 12, 0.8).Parent = effect
+	createSense(0.3, false, 0, 0.9).Parent = effect
+	createSense(-0.1, false, -12, 0.8).Parent = effect
+
+	createSense(1.15, true, 32, 0.3).Parent = effect
+	createSense(0.75, true, 12, 0.8).Parent = effect
+	createSense(0.3, true, 0, 0.9).Parent = effect
+	createSense(-0.1, true, -12, 0.8).Parent = effect
+
+	createSense(0, false, 90, 0, true).Parent = effect
+end
+
+function ToggleSpideySenseVisual(mode)
+	if mode == true then
+		--print('hi tehre')
+		randomizeSense()
+
+		task.spawn(function()
+			while task.wait(.1) do
+				if effect == nil or character == nil or Enabled == false then
+					pcall(function()
+						effect:Destroy()
+						effect = nil
+						return
+					end)
+					
+					return 
+				end
+
+				randomizeSense()
+			end
+			return
+		end)
+	else
+		pcall(function()
+			effect:Destroy()
+			effect = nil
+			return
+		end)
+	end
+end
 
 local backflipAnimation = {bf_a1, bf_a2}
 local SUPER_JUMP_KEY = Enum.KeyCode.T
@@ -1057,6 +1314,8 @@ function ToggleSpiderSense()
 			AddESP(Player)
 		end
 	else
+		ToggleSpideySenseVisual(false)
+		SpideySenseEnabled = false
 		Heartbeat:Stop()
 
 		VignetteFrame.BackgroundTransparency = 1
@@ -1067,7 +1326,7 @@ function ToggleSpiderSense()
 	end
 end
 
-local function createMarker(position)
+function createMarker(position)
     local part = Instance.new("Part", workspace)
     part.Name = "MouseMarker"
     part.Size = Vector3.new(1, 1, 1)
@@ -1186,6 +1445,9 @@ Players.PlayerRemoving:Connect(function(Player)
 	RemoveESP(Player)
 end)
 
+foundGun = false
+SpideySenseEnabled = false
+
 RunService.RenderStepped:Connect(function()
 	if not Enabled then
 		return
@@ -1277,34 +1539,6 @@ RunService.RenderStepped:Connect(function()
 					Data.Highlight.FillColor = Color3.fromRGB(15, 35, 75)
 				end
 			end
-
-			--[[Data.Info.Text =
-				math.floor(Humanoid.Health) ..
-				"/" ..
-				math.floor(Humanoid.MaxHealth) ..
-				" - " ..
-				DistanceNumber ..
-				" studs"
-
-			local DistanceAlpha = math.clamp(1 - (Distance / 150), 0, 1)
-
-			Data.Highlight.OutlineTransparency =
-				0.65 - (DistanceAlpha * 0.65)
-
-			Data.Highlight.FillTransparency =
-				0.55 - (DistanceAlpha * 0.2)
-
-			if HasGun(Player) then
-				Data.Highlight.OutlineColor = Color3.fromRGB(255, 65, 30)
-				Data.Highlight.FillColor = Color3.fromRGB(75, 20, 25)
-
-				if Distance < ClosestGunDistance then
-					ClosestGunDistance = Distance
-				end
-			else
-				Data.Highlight.OutlineColor = Color3.fromRGB(255, 115, 35)
-				Data.Highlight.FillColor = Color3.fromRGB(15, 35, 75)
-			end]]
 		else
 			RemoveESP(Player)
 		end
@@ -1321,6 +1555,16 @@ RunService.RenderStepped:Connect(function()
 
 		Heartbeat.Volume =
 			0.25 + (DangerAlpha * 0.25)
+
+		if ClosestGunDistance <= 50 then
+			if SpideySenseEnabled == false then
+				SpideySenseEnabled = true
+				ToggleSpideySenseVisual(true)
+			end
+		else
+			SpideySenseEnabled = false
+			ToggleSpideySenseVisual(false)
+		end
 	else
 		VignetteFrame.BackgroundTransparency = 1
 
@@ -1336,7 +1580,7 @@ wind_sfx.Volume = 0
 wind_sfx.Looped = true
 wind_sfx:Play()
 
- wind_sfx2 = Instance.new('Sound', character.Head)
+wind_sfx2 = Instance.new('Sound', character.Head)
 wind_sfx2.SoundId = 'rbxassetid://5113213873'
 wind_sfx2.RollOffMaxDistance = math.huge
 wind_sfx2.Volume = 0
@@ -1827,10 +2071,12 @@ end
 
 function enableActivePhysics()
 	ensurePhysicsObjects()
+
 	if not physicsActive then
 		physicsActive = true
 		savedAutoRotate = humanoid.AutoRotate
 	end
+	
 	humanoid.AutoRotate = false
 	vectorForce.Enabled = true
 	alignOrientation.Enabled = true
@@ -1841,9 +2087,11 @@ function disableActivePhysics()
 		vectorForce.Force = Vector3.zero
 		vectorForce.Enabled = false
 	end
+
 	if alignOrientation then
 		alignOrientation.Enabled = false
 	end
+
 	if physicsActive then
 		physicsActive = false
 		humanoid.AutoRotate = savedAutoRotate
@@ -3368,6 +3616,7 @@ local function setCameraRotationMode(enabled)
 	if cameraRotationEnabled == enabled then
 		return
 	end
+
 	cameraRotationEnabled = enabled
 	cameraRotationOffset = 0
 	character:SetAttribute("CameraClimbRotationEnabled", enabled)
