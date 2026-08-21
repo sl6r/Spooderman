@@ -75,6 +75,38 @@ player.CharacterAdded:Connect(function(c) -- characterlol
 
 	raycastParams.FilterDescendantsInstances = {character}
 
+	table.clear(trails)
+
+	Limbs = {
+		Player.Character:FindFirstChild("LeftHand"),
+		Player.Character:FindFirstChild("RightHand"),
+		Player.Character:FindFirstChild("LeftFoot"),
+		Player.Character:FindFirstChild("RightFoot")
+	}
+
+	for i,v in ipairs(Limbs) do
+		local a0 = Instance.new("Attachment", v)
+		local a1 = Instance.new("Attachment", v)
+		a0.Position = Vector3.new(0, 0.3, 0)
+		a1.Position = Vector3.new(0, -0.3, 0)
+
+		local trail = Instance.new("Trail", v)
+		trail.Attachment0 = a0
+		trail.Attachment1 = a1
+		trail.Color = ColorSequence.new(Color3.new(1,1,1))
+		trail.WidthScale = NumberSequence.new(0.1)
+		trail.Lifetime = 0.15
+		trail.LightEmission = 1
+		trail.Transparency = NumberSequence.new({
+			NumberSequenceKeypoint.new(0, 0.75),
+			NumberSequenceKeypoint.new(0.5, 0.9),
+			NumberSequenceKeypoint.new(1, 1)
+		})
+		trail.Enabled = false
+
+		table.insert(trails, trail)
+	end
+
     IDLE_ANIMATION_ID = actualIdleAnim
     JUMP_ANIMATION_ID = "rbxassetid://137947353570049"
     FALL_ANIMATION_ID = "rbxassetid://87487899978506"
@@ -156,6 +188,38 @@ animator = humanoid:FindFirstChildOfClass("Animator") or humanoid:WaitForChild("
 bf_a1 = Instance.new('Animation'); bf_a1.AnimationId = 'rbxassetid://74012998347103'
 bf_a2 = Instance.new('Animation'); bf_a2.AnimationId = 'rbxassetid://76240339944801'
 
+trails = {}
+
+Limbs = {
+	character:FindFirstChild("LeftHand"),
+	character:FindFirstChild("RightHand"),
+	character:FindFirstChild("LeftFoot"),
+	character:FindFirstChild("RightFoot")
+}
+
+for i,v in ipairs(Limbs) do
+	local a0 = Instance.new("Attachment", v)
+	local a1 = Instance.new("Attachment", v)
+	a0.Position = Vector3.new(0, 0.3, 0)
+	a1.Position = Vector3.new(0, -0.3, 0)
+
+	local trail = Instance.new("Trail", v)
+	trail.Attachment0 = a0
+	trail.Attachment1 = a1
+	trail.Color = ColorSequence.new(Color3.new(1,1,1))
+	trail.WidthScale = NumberSequence.new(0.1)
+	trail.Lifetime = 0.15
+	trail.LightEmission = 1
+	trail.Transparency = NumberSequence.new({
+		NumberSequenceKeypoint.new(0, .9),
+		NumberSequenceKeypoint.new(.5, .9),
+		NumberSequenceKeypoint.new(1, 1)
+	})
+	trail.Enabled = false
+
+	table.insert(trails, trail)
+end
+
 function createPart()
 	if not character.Parent or not rootPart.Parent then
 		return
@@ -201,9 +265,11 @@ RunService.Heartbeat:Connect(function(dt)
 
 	local velocity = rootPart.AssemblyLinearVelocity
 	local speed = velocity.Magnitude
+
 	if speed >= 85 then
 		spawnTimer -= dt
 		local maxWinds = math.clamp(math.floor((speed - 70) / 4) + 12, 12, 35)
+
 		if #winds < maxWinds and spawnTimer <= 0 then
 			createPart()
 			spawnTimer = math.random(1, 4) / 100
@@ -213,6 +279,7 @@ RunService.Heartbeat:Connect(function(dt)
 	end
 
 	local falling = -velocity.Y >= 35
+
 	for i = #winds, 1, -1 do
 		local wind = winds[i]
 		if not wind.part.Parent then
@@ -225,12 +292,20 @@ RunService.Heartbeat:Connect(function(dt)
 		local rotationCFrame = falling and CFrame.Angles(math.rad(-90), 0, 0) or CFrame.new()
 
 		if wind.elapsed <= 0.045 then
+			for i,v in ipairs(trails) do
+		        v.Enabled = true
+	        end
+
 			local alpha = wind.elapsed / 0.045
 			alpha = alpha * alpha * (3 - 2 * alpha)
 			local length = 2 + (wind.targetLength - 2) * alpha
 			wind.part.Size = Vector3.new(0.08, 0.08, length)
 			wind.weld.C0 = CFrame.new(wind.offset + Vector3.new(0, 0, alpha * 9)) * rotationCFrame
 		elseif wind.elapsed <= wind.lifetime then
+			for i,v in ipairs(trails) do
+		        v.Enabled = true
+	        end
+
 			local alpha = (wind.elapsed - 0.045) / (wind.lifetime - 0.045)
 			alpha = math.clamp(alpha, 0, 1)
 			alpha = alpha * alpha * (3 - 2 * alpha)
@@ -238,6 +313,9 @@ RunService.Heartbeat:Connect(function(dt)
 			wind.part.Transparency = 0.82 + 0.18 * alpha
 			wind.weld.C0 = CFrame.new(wind.offset + Vector3.new(0, 0, 9 + alpha * 3)) * rotationCFrame
 		else
+			for i,v in ipairs(trails) do
+		        v.Enabled = false
+	        end
 			wind.part:Destroy()
 			table.remove(winds, i)
 		end
