@@ -39,6 +39,8 @@ character = player.Character or player.CharacterAdded:Wait()
 respawned = false
 
 player.CharacterAdded:Connect(function(c) -- characterlol
+	AnimCD = false
+	above = false
     loadedTracks = {}
     respawned = true
     destroyed = false
@@ -78,10 +80,10 @@ player.CharacterAdded:Connect(function(c) -- characterlol
 	table.clear(trails)
 
 	Limbs = {
-		Player.Character:FindFirstChild("LeftHand"),
-		Player.Character:FindFirstChild("RightHand"),
-		Player.Character:FindFirstChild("LeftFoot"),
-		Player.Character:FindFirstChild("RightFoot")
+		character:FindFirstChild("LeftHand"),
+		character:FindFirstChild("RightHand"),
+		character:FindFirstChild("LeftFoot"),
+		character:FindFirstChild("RightFoot")
 	}
 
 	for i,v in ipairs(Limbs) do
@@ -187,6 +189,7 @@ animator = humanoid:FindFirstChildOfClass("Animator") or humanoid:WaitForChild("
 --local swingController = character:FindFirstChild("SpiderSwingController")
 bf_a1 = Instance.new('Animation'); bf_a1.AnimationId = 'rbxassetid://74012998347103'
 bf_a2 = Instance.new('Animation'); bf_a2.AnimationId = 'rbxassetid://76240339944801'
+bf_a3 = Instance.new('Animation'); bf_a3.AnimationId = 'rbxassetid://133466390878060'
 
 trails = {}
 
@@ -488,7 +491,7 @@ function ToggleSpideySenseVisual(mode)
 	end
 end
 
-local backflipAnimation = {bf_a1, bf_a2}
+local backflipAnimation = {bf_a1, bf_a2, bf_a3}
 local SUPER_JUMP_KEY = Enum.KeyCode.T
 local SUPER_JUMP_CHARGE_TIME = 2
 local SUPER_JUMP_MIN_UPWARD_SPEED = 46
@@ -558,28 +561,155 @@ local diedConnection
 
 local AnimCD = false
 
+function playAirTrickAnim(ID, Speed, Position)
+	local Anim = Instance.new('Animation')
+    Anim.AnimationId = ID
+
+    local AnimTrack = player.Character.Humanoid:LoadAnimation(Anim)
+    AnimTrack.Priority = Enum.AnimationPriority.Action4
+    AnimTrack:Play()
+	AnimTrack.TimePosition = Position
+	AnimTrack:AdjustSpeed(Speed)
+
+	return AnimTrack
+end
+
+above = false
+
+function jumpToAbove(num)
+	local origin = rootPart.CFrame
+	local size = Vector3.new(3.75, 25, 3.75)
+	local dir = Vector3.new(0, 25, 0)
+
+	local params = RaycastParams.new()
+	params.FilterDescendantsInstances = {char}
+	params.FilterType = Enum.RaycastFilterType.Exclude
+
+	local result = workspace:Blockcast(origin, size, dir, params)
+
+	if result then
+		local hitPart = result.Instance
+		local targetPos = result.Position + Vector3.new(0,-4.1,0)
+
+		rootPart.Anchored = false
+		local bv = Instance.new("BodyVelocity")
+		bv.MaxForce = Vector3.new(0, math.huge, 0)
+		bv.Velocity = Vector3.new(0, 85, 0)
+		bv.Parent = rootPart
+
+		local reached = false
+		local timeout = 0
+
+		while timeout < 1 do
+			if (rootPart.Position - targetPos).Magnitude <= 3 then
+				reached = true
+				break
+			end
+			task.wait()
+			timeout += task.wait()
+		end
+
+		bv:Destroy()
+
+		if reached then
+			AnimCD = true
+			above = true
+            rootPart.CFrame = CFrame.new(targetPos) * (rootPart.CFrame - rootPart.CFrame.Position)
+
+			local AnimTrack
+
+			if num == 2 then
+				AnimTrack = playAirTrickAnim('rbxassetid://81272740146429', 1, 0)
+			else
+				AnimTrack = playAirTrickAnim('rbxassetid://81272740146429 ', 1, 0)
+			end
+
+            AnimTrack:Play()
+
+			local weld = Instance.new("WeldConstraint")
+			weld.Part0 = rootPart
+			weld.Part1 = hitPart
+			weld.Parent = rootPart
+
+			repeat task.wait() until character == nil or game:GetService('UserInputService'):IsKeyDown(Enum.KeyCode.Space)
+
+			AnimCD = false
+			above = false
+
+            AnimTrack:Stop()
+
+			if weld then
+				weld:Destroy()
+			end
+		end
+	end
+end
+
 game:GetService('UserInputService').InputBegan:Connect(function(Input, IsTyping)
-    if IsTyping or AnimCD == true or character == nil or character:GetAttribute("IsWebSwinging") == true or character:GetAttribute("IsWebZipping") == true or not character:FindFirstChild('Humanoid') or character:FindFirstChild('Humanoid'):GetState() ~= Enum.HumanoidStateType.Freefall then return end
+    if IsTyping or AnimCD == true or character == nil or character:GetAttribute("IsWebSwinging") == true or character:GetAttribute("IsWebZipping") == true or not character:FindFirstChild('Humanoid') then return end
 
     if character:GetAttribute("IsWallClimbing") == true or character:GetAttribute("ClimbModeEnabled") == true or character:GetAttribute('IsBackflip') then
 		return
 	end
 
-    if Input.KeyCode == Enum.KeyCode.Z then
-        AnimCD = true
-        local Anim = Instance.new('Animation')
-        Anim.AnimationId = 'rbxassetid://122491766816154'
+	if Input.KeyCode == Enum.KeyCode.U and above == false then
+		jumpToAbove(math.random(1,2))
+		return
+	end
 
-        local Track123 = player.Character.Humanoid:LoadAnimation(Anim)
-        Track123.Priority = Enum.AnimationPriority.Action4
-        Track123:Play()
+	if character:FindFirstChild('Humanoid'):GetState() ~= Enum.HumanoidStateType.Freefall then return end
 
+	if Input.KeyCode == Enum.KeyCode.Z and game:GetService('UserInputService'):IsKeyDown(Enum.KeyCode.LeftControl) then
+		AnimCD = true
+		local AnimTrack = playAirTrickAnim('rbxassetid://131556235813350', 1, 0)
         local repeating = true
 
         task.spawn(function()
             while repeating == true do
                 if character:GetAttribute("IsWebSwinging") == true or character:GetAttribute("IsWebZipping") == true or character:GetAttribute("ClimbModeEnabled") == true or character:FindFirstChild('Humanoid'):GetState() ~= Enum.HumanoidStateType.Freefall then
-                    Track123:Stop()
+                    AnimTrack:Stop()
+                    return
+                end
+                task.wait()
+            end
+            return
+        end)
+
+		task.delay(1.5, function()
+			AnimTrack:Stop()
+            AnimCD = false
+            AnimTrack:Destroy()
+		end)
+	elseif Input.KeyCode == Enum.KeyCode.X and game:GetService('UserInputService'):IsKeyDown(Enum.KeyCode.LeftControl) then
+		AnimCD = true
+		local AnimTrack = playAirTrickAnim('rbxassetid://104012866072534', 0, 3.5)
+        local repeating = true
+
+        task.spawn(function()
+            while repeating == true do
+                if character:GetAttribute("IsWebSwinging") == true or character:GetAttribute("IsWebZipping") == true or character:GetAttribute("ClimbModeEnabled") == true or character:FindFirstChild('Humanoid'):GetState() ~= Enum.HumanoidStateType.Freefall then
+                    AnimTrack:Stop()
+                    return
+                end
+                task.wait()
+            end
+            return
+        end)
+
+		task.delay(1.5, function()
+			AnimTrack:Stop()
+            AnimCD = false
+            AnimTrack:Destroy()
+		end)
+	elseif Input.KeyCode == Enum.KeyCode.Z then
+		AnimCD = true
+		local AnimTrack = playAirTrickAnim('rbxassetid://122491766816154', 1, 0)
+        local repeating = true
+
+        task.spawn(function()
+            while repeating == true do
+                if character:GetAttribute("IsWebSwinging") == true or character:GetAttribute("IsWebZipping") == true or character:GetAttribute("ClimbModeEnabled") == true or character:FindFirstChild('Humanoid'):GetState() ~= Enum.HumanoidStateType.Freefall then
+                    AnimTrack:Stop()
                     return
                 end
                 task.wait()
@@ -589,25 +719,19 @@ game:GetService('UserInputService').InputBegan:Connect(function(Input, IsTyping)
 
 		task.delay(1, function()
             repeating = false
-			Track123:Stop()
+			AnimTrack:Stop()
             AnimCD = false
-            Track123:Destroy()
+            AnimTrack:Destroy()
 		end)
     elseif Input.KeyCode == Enum.KeyCode.X then
         AnimCD = true
-        local Anim = Instance.new('Animation')
-        Anim.AnimationId = 'rbxassetid://131556235813350' -- 'rbxassetid://131057503397598'
-
-        local TrackABC = player.Character.Humanoid:LoadAnimation(Anim)
-        TrackABC.Priority = Enum.AnimationPriority.Action4
-        TrackABC:Play()
-
+		local AnimTrack = playAirTrickAnim('rbxassetid://87011385965271', 1.65, 0)
         local repeating = true
 
         task.spawn(function()
             while repeating == true do
                 if character:GetAttribute("IsWebSwinging") == true or character:GetAttribute("IsWebZipping") == true or character:GetAttribute("ClimbModeEnabled") == true or character:FindFirstChild('Humanoid'):GetState() ~= Enum.HumanoidStateType.Freefall then
-                    TrackABC:Stop()
+                    AnimTrack:Stop()
                     return
                 end
                 task.wait()
@@ -615,64 +739,55 @@ game:GetService('UserInputService').InputBegan:Connect(function(Input, IsTyping)
             return
         end)
 
-		task.delay(1.5, function()
-			TrackABC:Stop()
+		task.delay(.5, function()
+            repeating = false
+			AnimTrack:Stop(.2)
             AnimCD = false
-            TrackABC:Destroy()
+			task.wait(.2)
+            AnimTrack:Destroy()
+		end)
+	elseif Input.KeyCode == Enum.KeyCode.C then
+        AnimCD = true
+		local AnimTrack = playAirTrickAnim('rbxassetid://87011385965271', 1.65, 1)
+        local repeating = true
+
+        task.spawn(function()
+            while repeating == true do
+                if character:GetAttribute("IsWebSwinging") == true or character:GetAttribute("IsWebZipping") == true or character:GetAttribute("ClimbModeEnabled") == true or character:FindFirstChild('Humanoid'):GetState() ~= Enum.HumanoidStateType.Freefall then
+                    AnimTrack:Stop()
+                    return
+                end
+                task.wait()
+            end
+            return
+        end)
+
+		task.delay(.5, function()
+            repeating = false
+			AnimTrack:Stop(.21)
+            AnimCD = false
+			task.wait(.21)
+            AnimTrack:Destroy()
 		end)
 	elseif Input.KeyCode == Enum.KeyCode.V then
         AnimCD = true
-        local Anim = Instance.new('Animation')
-        Anim.AnimationId = 'rbxassetid://100489683135054'
+		local AnimTrack = playAirTrickAnim('rbxassetid://100489683135054', 1, 0)
 
-        local TrackRoll = player.Character.Humanoid:LoadAnimation(Anim)
-        TrackRoll.Priority = Enum.AnimationPriority.Action4
-		TrackRoll.Looped = true
-        TrackRoll:Play()
+		AnimTrack.Looped = true
 
         task.spawn(function()
-            while TrackRoll.IsPlaying do
+            while AnimTrack.IsPlaying do
 				task.wait()
 
                 if character == nil or not character:FindFirstChild('Humanoid') or character:GetAttribute("IsWebSwinging") == true or character:GetAttribute("IsWebZipping") == true or character:GetAttribute("ClimbModeEnabled") == true or not game:GetService('UserInputService'):IsKeyDown(Enum.KeyCode.V) or character:FindFirstChild('Humanoid'):GetState() ~= Enum.HumanoidStateType.Freefall then
-                	TrackRoll:Stop()
+                	AnimTrack:Stop()
             		AnimCD = false
-            		TrackRoll:Destroy()
+            		AnimTrack:Destroy()
                     return
                 end
             end
             return
         end)
-	elseif Input.KeyCode == Enum.KeyCode.C then
-        AnimCD = true
-        local Anim = Instance.new('Animation')
-        Anim.AnimationId = 'rbxassetid://104012866072534'
-
-        local TrackLaying = player.Character.Humanoid:LoadAnimation(Anim)
-        TrackLaying.Priority = Enum.AnimationPriority.Action4
-        TrackLaying:Play()
-
-		TrackLaying.TimePosition = 3.5
-    	TrackLaying:AdjustSpeed(0)
-
-        local repeating = true
-
-        task.spawn(function()
-            while repeating == true do
-                if character:GetAttribute("IsWebSwinging") == true or character:GetAttribute("IsWebZipping") == true or character:GetAttribute("ClimbModeEnabled") == true or character:FindFirstChild('Humanoid'):GetState() ~= Enum.HumanoidStateType.Freefall then
-                    TrackLaying:Stop()
-                    return
-                end
-                task.wait()
-            end
-            return
-        end)
-
-		task.delay(1.5, function()
-			TrackLaying:Stop()
-            AnimCD = false
-            TrackLaying:Destroy()
-		end)
     end
 end)
 
@@ -1036,8 +1151,11 @@ function playBackflip()
 	backflipTrack.Looped = false
 	backflipTrack.Priority = Enum.AnimationPriority.Action4
 
-	if backflipNum == 2 then
+	if backflipNum == 3 then
 		backflipNum = 1
+    	backflipTrack:AdjustSpeed(2.4)
+	elseif backflipNum == 2 then
+		backflipNum = 3
     	backflipTrack.TimePosition = .2
     	backflipTrack:AdjustSpeed(1.9)
 	else
@@ -1413,38 +1531,54 @@ function createMarker(position)
     part.CanCollide = false
     part.Transparency = 1
 
-    local billboard = Instance.new("BillboardGui", part)
-    billboard.Size = UDim2.new(0, 150, 0, 50)
-    billboard.StudsOffset = Vector3.new(0, 2, 0)
-    billboard.AlwaysOnTop = true
+	local billboard = Instance.new("BillboardGui", part)
+	billboard.Size = UDim2.new(0, 150, 0, 50)
+	billboard.StudsOffset = Vector3.new(0, 5, 0)
+	billboard.AlwaysOnTop = true
 
-    local label = Instance.new("TextLabel", billboard)
-    label.Size = UDim2.new(1, 0, 1, 0)
-    label.BackgroundTransparency = 1
-    label.TextColor3 = Color3.new(1, 1, 1)
-    label.TextStrokeTransparency = 0
-    label.TextScaled = true
-    label.Font = Enum.Font.GothamBold
-    label.Text = "0 studs"
+	local label = Instance.new("TextLabel", billboard)
+	label.Size = UDim2.new(1, 0, 1, 0)
+	label.BackgroundTransparency = 1
+	label.TextColor3 = Color3.new(1, 1, 1)
+	label.TextStrokeTransparency = .5
+	label.TextScaled = false
+	label.TextSize = 18
+	label.TextWrapped = true
+	label.Font = Enum.Font.GothamBold
+	label.Text = "0"
+	label.ZIndex = 2
 
-    local highlight = Instance.new("SelectionSphere", part)
-    highlight.Adornee = part
-    highlight.Color3 = Color3.fromRGB(0, 200, 255)
+	local billboard2 = Instance.new("BillboardGui", part)
+	billboard2.Size = UDim2.new(0, 60, 0, 60)
+	billboard2.StudsOffset = Vector3.new(0, 0, 0)
+	billboard2.AlwaysOnTop = true
 
-    local updateConn
-    updateConn = game:GetService('RunService').RenderStepped:Connect(function()
-        local character = player.Character
-        if character and character.PrimaryPart then
-            local dist = (character.PrimaryPart.Position - part.Position).Magnitude
-            label.Text = string.format("%.1f studs", dist)
-        end
-    end)
+	local imglabel = Instance.new("ImageLabel", billboard2)
+	imglabel.Size = UDim2.new(1, 0, 1, 0)
+	imglabel.BackgroundTransparency = 1
+	imglabel.Image = 'rbxassetid://263401222'
+	imglabel.ZIndex = -1
+	imglabel.AnchorPoint = Vector2.new(0.5, 0.5)
+	imglabel.Position = UDim2.new(0.5, 0, 0.5, 0)
 
-    task.delay(10, function()
+	local updateConn
+	updateConn = game:GetService('RunService').RenderStepped:Connect(function(dt)
+		local character = player.Character
+		if character and character.PrimaryPart then
+			local dist = (character.PrimaryPart.Position - part.Position).Magnitude
+			label.Text = tostring(math.floor(dist))
+		end
+
+		imglabel.Rotation = (imglabel.Rotation + 160 * dt) % 360
+	end)
+
+    task.delay(15, function()
         updateConn:Disconnect()
         part:Destroy()
     end)
 end
+
+m_cd = false
 
 UserInputService.InputBegan:Connect(function(Input, Typing)
 	if Typing then
@@ -1477,7 +1611,7 @@ UserInputService.InputBegan:Connect(function(Input, Typing)
 		if idleAnimationEnabled == false then
 			stopCurrent()
 		end
-	elseif Input.UserInputType == Enum.UserInputType.MouseButton3 then
+	elseif Input.UserInputType == Enum.UserInputType.MouseButton3 and m_cd == false then
         local mousePos = UserInputService:GetMouseLocation()
         local viewportRay = workspace.CurrentCamera:ViewportPointToRay(mousePos.X, mousePos.Y)
 
@@ -1488,7 +1622,15 @@ UserInputService.InputBegan:Connect(function(Input, Typing)
         local result = workspace:Raycast(viewportRay.Origin, viewportRay.Direction * 1000, raycastParams2)
 
         if result then
+			m_cd = true
+
+			task.delay(1, function()
+				m_cd = false
+			end)
+
             createMarker(result.Position)
+
+			local S = Instance.new('Sound', character.Head); S.SoundId = 'rbxassetid://83737160336234'; S.RollOffMaxDistance = 500; S.Volume = 1; S.PlaybackSpeed = .5; S:Play(); game:GetService('Debris'):AddItem(S, 5)
         end
 	end
 end)
