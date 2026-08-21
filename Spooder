@@ -38,6 +38,16 @@ character = player.Character or player.CharacterAdded:Wait()
 
 respawned = false
 
+oldMouseIcon = game:GetService("UserInputService").MouseIcon
+
+UserInputService:GetPropertyChangedSignal("MouseBehavior"):Connect(function()
+    if UserInputService.MouseBehavior == Enum.MouseBehavior.LockCenter then
+	    game:GetService("UserInputService").MouseIcon = 'rbxassetid://13848589313'
+    else
+	    game:GetService("UserInputService").MouseIcon = oldMouseIcon
+     end
+end)
+
 player.CharacterAdded:Connect(function(c) -- characterlol
 	AnimCD = false
 	above = false
