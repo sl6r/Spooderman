@@ -724,7 +724,7 @@ game:GetService('UserInputService').InputBegan:Connect(function(Input, IsTyping)
             while AnimTrack.IsPlaying do
 				task.wait()
 
-                if character == nil or not character:FindFirstChild('Humanoid') or character:GetAttribute("IsWebSwinging") == true or character:GetAttribute("IsWebZipping") == true or character:GetAttribute("ClimbModeEnabled") == true or not game:GetService('UserInputService'):IsKeyDown(Enum.KeyCode.V) or character:FindFirstChild('Humanoid'):GetState() ~= Enum.HumanoidStateType.Freefall then
+                if character == nil or not character:FindFirstChild('Humanoid') or character:GetAttribute("IsWebSwinging") == true or character:GetAttribute("IsWebZipping") == true or character:GetAttribute("ClimbModeEnabled") == true or not game:GetService('UserInputService'):IsKeyDown(Enum.KeyCode.C) or character:FindFirstChild('Humanoid'):GetState() ~= Enum.HumanoidStateType.Freefall then
                 	AnimTrack:Stop()
             		AnimCD = false
             		AnimTrack:Destroy()
