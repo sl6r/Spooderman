@@ -627,6 +627,10 @@ function jumpToAbove(num)
 		if reached or hitPart.Name == "LIGHT" then
 			AnimCD = true
 			above = true
+
+			humanoid.AutoRotate = false
+			humanoid:ChangeState(Enum.HumanoidStateType.Physics)
+
             rootPart.CFrame = CFrame.new(targetPos) * (rootPart.CFrame - rootPart.CFrame.Position)
 
 			task.wait()
@@ -644,15 +648,14 @@ function jumpToAbove(num)
 			rootPart.AssemblyLinearVelocity = Vector3.zero
     		rootPart.AssemblyAngularVelocity = Vector3.zero
 
-			rootPart.CFrame = CFrame.new(targetPos) * (rootPart.CFrame - rootPart.CFrame.Position)
-
-			local weld = Instance.new("WeldConstraint", rootPart)
-			weld.Part0 = rootPart
-			rootPart.CFrame = CFrame.new(targetPos) * (rootPart.CFrame - rootPart.CFrame.Position)
-			weld.Part1 = hitPart
-
 			rootPart.AssemblyLinearVelocity = Vector3.zero
     		rootPart.AssemblyAngularVelocity = Vector3.zero
+
+			rootPart.CFrame = CFrame.new(targetPos) * (rootPart.CFrame - rootPart.CFrame.Position)
+
+			task.wait(.05)
+
+			rootPart.Anchored = true
 
 			repeat task.wait() until character == nil or game:GetService('UserInputService'):IsKeyDown(Enum.KeyCode.Space)
 
@@ -661,9 +664,14 @@ function jumpToAbove(num)
 
             AnimTrack:Stop()
 
-			if weld then
-				weld:Destroy()
-			end
+			rootPart.Anchored = false
+
+			--if weld then
+				--weld:Destroy()
+			--end
+
+			humanoid.AutoRotate = true
+			humanoid:ChangeState(Enum.HumanoidStateType.GettingUp)
 		end
 	end
 end
