@@ -596,7 +596,7 @@ function jumpToAbove(num)
 
 	local result = workspace:Blockcast(origin, size, dir, params)
 
-	if result then
+	if result and result.Instance and result.Instance.Parent and result.Instance.Parent:FindFirstChild('Humanoid') == nil then
 		local hitPart = result.Instance
 		local targetPos = result.Position + Vector3.new(0,-4.1,0)
 
@@ -714,6 +714,25 @@ game:GetService('UserInputService').InputBegan:Connect(function(Input, IsTyping)
             AnimCD = false
             AnimTrack:Destroy()
 		end)
+	elseif Input.KeyCode == Enum.KeyCode.C and game:GetService('UserInputService'):IsKeyDown(Enum.KeyCode.LeftControl) then
+        AnimCD = true
+		local AnimTrack = playAirTrickAnim('rbxassetid://100489683135054', 1, 0)
+
+		AnimTrack.Looped = true
+
+        task.spawn(function()
+            while AnimTrack.IsPlaying do
+				task.wait()
+
+                if character == nil or not character:FindFirstChild('Humanoid') or character:GetAttribute("IsWebSwinging") == true or character:GetAttribute("IsWebZipping") == true or character:GetAttribute("ClimbModeEnabled") == true or not game:GetService('UserInputService'):IsKeyDown(Enum.KeyCode.V) or character:FindFirstChild('Humanoid'):GetState() ~= Enum.HumanoidStateType.Freefall then
+                	AnimTrack:Stop()
+            		AnimCD = false
+            		AnimTrack:Destroy()
+                    return
+                end
+            end
+            return
+        end)
 	elseif Input.KeyCode == Enum.KeyCode.Z then
 		AnimCD = true
 		local AnimTrack = playAirTrickAnim('rbxassetid://122491766816154', 1, 0)
@@ -782,25 +801,6 @@ game:GetService('UserInputService').InputBegan:Connect(function(Input, IsTyping)
 			task.wait(.21)
             AnimTrack:Destroy()
 		end)
-	elseif Input.KeyCode == Enum.KeyCode.V then
-        AnimCD = true
-		local AnimTrack = playAirTrickAnim('rbxassetid://100489683135054', 1, 0)
-
-		AnimTrack.Looped = true
-
-        task.spawn(function()
-            while AnimTrack.IsPlaying do
-				task.wait()
-
-                if character == nil or not character:FindFirstChild('Humanoid') or character:GetAttribute("IsWebSwinging") == true or character:GetAttribute("IsWebZipping") == true or character:GetAttribute("ClimbModeEnabled") == true or not game:GetService('UserInputService'):IsKeyDown(Enum.KeyCode.V) or character:FindFirstChild('Humanoid'):GetState() ~= Enum.HumanoidStateType.Freefall then
-                	AnimTrack:Stop()
-            		AnimCD = false
-            		AnimTrack:Destroy()
-                    return
-                end
-            end
-            return
-        end)
     end
 end)
 
@@ -2446,7 +2446,11 @@ function startSwing()
 	return true
 end
 
+zipCD = false
+
 function startZip()
+        if zipCD == true then return end
+
 	if not canUseWebs() or not isAirborne() then
 		return false
 	end
@@ -2463,6 +2467,12 @@ function startZip()
 		clearWebVisual()
 		return false
 	end
+
+        zipCD = true
+
+        task.delay(.5, function()
+                zipCD = false
+        end)
 
 	zipStartedAt = os.clock()
 	activeMode = "Zip"
@@ -3047,29 +3057,36 @@ CAMERA_TOGGLE_ACTION = "SpiderClimbCameraToggle_" .. player.UserId
 JUMP_ACTION = "SpiderClimbJump_" .. player.UserId
 MOVE_ACTION = "SpiderClimbMove_" .. player.UserId
 CLIMB_KEY = Enum.KeyCode.F
-CAMERA_TOGGLE_KEY = Enum.KeyCode.B
+CAMERA_TOGGLE_KEY = Enum.KeyCode.V
 DETECTION_DISTANCE = 5
 FLOOR_DETECTION_DISTANCE = 6
 DETECTION_INTERVAL = 1 / 30
-WALL_OFFSET = 2.5 -- .75
+WALL_OFFSET = 2.5
 CORNER_OFFSET = 3
 CORNER_LANDING_DISTANCE = 1.6
 CONVEX_LANDING_DISTANCE = 3
 CONCAVE_TRIGGER_DISTANCE = 2
 CORNER_TRANSITION_RATE = 3.5
 MAX_TARGET_LEAD = 1.25
-CLIMB_SPEED = 18
+CLIMB_SPEED = 16
 MIN_WALL_WIDTH = 6
 MIN_WALL_HEIGHT = 6
 SURFACE_CHANGE_THRESHOLD = 0.82
-LOST_SURFACE_GRACE = 0.4
+LOST_SURFACE_GRACE = 0.7
+EDGE_RECOVERY_GRACE = 0.95
+EDGE_FAN_ANGLES = {0, 18, -18, 36, -36, 54, -54}
+SURFACE_PROBE_OUTSET = 5
+SURFACE_PROBE_DEPTH = 8
+SURFACE_CONTINUATION_DOT = 0.72
+CAMERA_TRANSITION_HOLD = 0.18
+SURFACE_SWITCH_LOCK = 0.2
 NORMAL_RESPONSE = 16
 CAMERA_ROTATION_SPEED = 9
 POSITION_RESPONSE = 35
 ORIENTATION_RESPONSE = 80
-CLIMB_JUMP_BACKWARD_SPEED = 42
-CLIMB_JUMP_UPWARD_SPEED = 54
-CLIMB_JUMP_FORCE_MULTIPLIER = 1.46
+CLIMB_JUMP_BACKWARD_SPEED = 52
+CLIMB_JUMP_UPWARD_SPEED = 36
+CLIMB_JUMP_FORCE_MULTIPLIER = 1.15
 ACTION_PRIORITY = 3000
 
 raycastParams = RaycastParams.new()
@@ -3111,6 +3128,16 @@ detectionAccumulator = DETECTION_INTERVAL
 cornerDetectionAccumulator = DETECTION_INTERVAL
 lastSurfaceTime = 0
 lastAnimationSpeed = -1
+lastCameraSurfaceUp = nil
+lastCameraSurfaceNormal = nil
+cameraReacquireAt = 0
+surfaceSwitchLockUntil = 0
+transitionFromNormal = nil
+transitionToNormal = nil
+heartbeatConnection = nil
+diedConnection = nil
+statsConnection = nil
+focusConnection = nil
 
 ClimbAnimation = Instance.new('Animation', character); ClimbAnimation.Name = 'ClimbAnimation'; ClimbAnimation.AnimationId = 'rbxassetid://130656380253826'
 climbTrack = humanoid:LoadAnimation(ClimbAnimation)
@@ -3199,11 +3226,97 @@ function getCameraSurfaceUp(normal)
 	if not camera then
 		return nil
 	end
-	local cameraDirection = projectOntoPlane(camera.CFrame.LookVector, normal)
-	if cameraDirection.Magnitude < 0.18 then
+
+	normal = normal.Unit
+	local verticalWall = math.abs(normal.Y) < 0.55
+	local candidate
+
+	if verticalWall then
+		local lookOnSurface = projectOntoPlane(camera.CFrame.LookVector, normal)
+		local lookStrength = lookOnSurface.Magnitude
+		local worldUpOnSurface = projectOntoPlane(Vector3.yAxis, normal)
+		local cameraUpOnSurface = projectOntoPlane(camera.CFrame.UpVector, normal)
+		local neutralUp
+
+		if cameraUpOnSurface.Magnitude >= 0.1 then
+			neutralUp = cameraUpOnSurface.Unit
+		elseif worldUpOnSurface.Magnitude >= 0.1 then
+			neutralUp = worldUpOnSurface.Unit
+		end
+
+		if neutralUp and worldUpOnSurface.Magnitude >= 0.1 then
+			local upright = worldUpOnSurface.Unit
+			if neutralUp:Dot(upright) < 0 then
+				neutralUp = -neutralUp
+			end
+		end
+
+		if not neutralUp then
+			local _, fallbackUp = getSurfaceBasis(normal, currentUp)
+			neutralUp = fallbackUp
+		end
+
+		candidate = neutralUp
+
+		if lookStrength > 0.16 then
+			local lookDirection = lookOnSurface.Unit
+			local blendAlpha = math.clamp((lookStrength - 0.16) / 0.34, 0, 1)
+			blendAlpha = blendAlpha * blendAlpha * (3 - 2 * blendAlpha)
+
+			local from = neutralUp.Unit
+			local dot = math.clamp(from:Dot(lookDirection), -1, 1)
+			local signedAngle = math.atan2(normal:Dot(from:Cross(lookDirection)), dot)
+			local rotated = CFrame.fromAxisAngle(normal, signedAngle * blendAlpha):VectorToWorldSpace(from)
+			if rotated.Magnitude >= 0.1 then
+				candidate = rotated.Unit
+			end
+		end
+	else
+		local lookOnSurface = projectOntoPlane(camera.CFrame.LookVector, normal)
+
+		if lookOnSurface.Magnitude >= 0.12 then
+			candidate = lookOnSurface.Unit
+		elseif lastCameraSurfaceUp and lastCameraSurfaceNormal
+			and math.abs(lastCameraSurfaceNormal.Unit:Dot(normal)) > 0.92
+		then
+			local stable = projectOntoPlane(lastCameraSurfaceUp, normal)
+			if stable.Magnitude >= 0.1 then
+				candidate = stable.Unit
+			end
+		end
+
+		if not candidate then
+			local projectedUp = projectOntoPlane(camera.CFrame.UpVector, normal)
+			local projectedRight = projectOntoPlane(camera.CFrame.RightVector, normal)
+
+			if projectedUp.Magnitude >= 0.12 then
+				candidate = projectedUp.Unit
+			elseif projectedRight.Magnitude >= 0.12 then
+				local reconstructedUp = normal:Cross(projectedRight.Unit)
+				if reconstructedUp.Magnitude >= 0.1 then
+					candidate = reconstructedUp.Unit
+				end
+			end
+		end
+	end
+
+	local sameSurfaceFamily = lastCameraSurfaceNormal
+		and math.abs(lastCameraSurfaceNormal.Unit:Dot(normal)) > 0.92
+
+	if not candidate then
+		if sameSurfaceFamily and lastCameraSurfaceUp then
+			local stable = projectOntoPlane(lastCameraSurfaceUp, normal)
+			if stable.Magnitude >= 0.1 then
+				return stable.Unit
+			end
+		end
 		return nil
 	end
-	return cameraDirection.Unit
+
+
+	lastCameraSurfaceUp = candidate
+	lastCameraSurfaceNormal = normal
+	return candidate
 end
 
 function getSignedSurfaceAngle(from, to, normal)
@@ -3218,11 +3331,7 @@ function getSignedSurfaceAngle(from, to, normal)
 end
 
 function getCameraDesiredUp(normal)
-	local cameraUp = getCameraSurfaceUp(normal)
-	if not cameraUp then
-		return nil
-	end
-	return CFrame.fromAxisAngle(normal, cameraRotationOffset):VectorToWorldSpace(cameraUp).Unit
+	return getCameraSurfaceUp(normal)
 end
 
 function rotateUpToward(current, target, normal, maxAngle)
@@ -3262,11 +3371,9 @@ function isClimbable(result)
 	end
 
 	local instance = result.Instance
-
 	if instance == workspace.Terrain then
 		return true
 	end
-
 	if not instance:IsA("BasePart") or not instance.CanCollide or isCharacterPart(instance) then
 		return false
 	end
@@ -3296,6 +3403,32 @@ end
 function blocksClimbRay(instance)
 	return instance:IsA("BasePart")
 		and (instance:GetAttribute("Climbable") == false or CollectionService:HasTag(instance, "NoClimb"))
+end
+
+function isTransitionSurface(result)
+	if not result then
+		return false
+	end
+
+	local instance = result.Instance
+	if instance == workspace.Terrain then
+		return true
+	end
+	if not instance:IsA("BasePart") or not instance.CanCollide or isCharacterPart(instance) then
+		return false
+	end
+	if instance:GetAttribute("Climbable") == false or CollectionService:HasTag(instance, "NoClimb") then
+		return false
+	end
+	return true
+end
+
+function castTransition(origin, direction)
+	local result = workspace:Raycast(origin, direction, raycastParams)
+	if isTransitionSurface(result) then
+		return result
+	end
+	return nil
 end
 
 function cast(origin, direction)
@@ -3341,7 +3474,6 @@ function findWallAhead()
 
 	local closest
 	local closestDistance = math.huge
-
 	for _, offset in offsets do
 		local result = cast(origin + offset, forward * DETECTION_DISTANCE)
 		if result then
@@ -3352,7 +3484,6 @@ function findWallAhead()
 			end
 		end
 	end
-
 	return closest
 end
 
@@ -3361,13 +3492,11 @@ function findSupportingSurface()
 	local right = projectOntoPlane(rootPart.CFrame.RightVector, Vector3.yAxis)
 	local forward = projectOntoPlane(rootPart.CFrame.LookVector, Vector3.yAxis)
 	local offsets = {Vector3.zero}
-
 	if right.Magnitude > 0.1 then
 		right = right.Unit
 		table.insert(offsets, right * 0.7)
 		table.insert(offsets, right * -0.7)
 	end
-
 	if forward.Magnitude > 0.1 then
 		forward = forward.Unit
 		table.insert(offsets, forward * 0.7)
@@ -3376,26 +3505,108 @@ function findSupportingSurface()
 
 	local closest
 	local closestDistance = math.huge
-
 	for _, offset in offsets do
 		local result = cast(origin + offset, -Vector3.yAxis * FLOOR_DETECTION_DISTANCE)
-
 		if result then
 			local distance = (result.Position - origin).Magnitude
-
 			if distance < closestDistance then
 				closest = result
 				closestDistance = distance
 			end
 		end
 	end
-
 	return closest
 end
 
-function findCurrentSurface(surfacePoint, normal)
-	local origin = surfacePoint + normal * (WALL_OFFSET + 1)
-	return cast(origin, -normal * (WALL_OFFSET + 2))
+function isLocalSurfaceContinuation(result, normal)
+	if not result then
+		return false
+	end
+
+	local instance = result.Instance
+	if instance ~= workspace.Terrain then
+		if not instance:IsA("BasePart") or not instance.CanCollide or isCharacterPart(instance) then
+			return false
+		end
+		if instance:GetAttribute("Climbable") == false or CollectionService:HasTag(instance, "NoClimb") then
+			return false
+		end
+	end
+
+	return result.Normal.Unit:Dot(normal.Unit) >= SURFACE_CONTINUATION_DOT
+end
+
+function findCurrentSurface(surfacePoint, normal, moveDirection)
+	normal = normal.Unit
+	local hasMovement = moveDirection and moveDirection.Magnitude > 0.05
+	local direction = hasMovement and moveDirection.Unit or nil
+	local origin = surfacePoint + normal * SURFACE_PROBE_OUTSET
+	local rawResult = workspace:Raycast(
+		origin,
+		-normal * (SURFACE_PROBE_OUTSET + SURFACE_PROBE_DEPTH),
+		raycastParams
+	)
+
+	if rawResult then
+		if isLocalSurfaceContinuation(rawResult, normal) then
+			return rawResult, false
+		end
+
+		if isTransitionSurface(rawResult) and hasMovement then
+			local candidateNormal = rawResult.Normal.Unit
+			if candidateNormal:Dot(normal) < SURFACE_CHANGE_THRESHOLD
+				and math.abs(candidateNormal:Dot(direction)) > 0.08
+			then
+				return rawResult, false
+			end
+		end
+
+		local instance = rawResult.Instance
+		if instance == workspace.Terrain
+			or (instance:IsA("BasePart") and instance.CanCollide and not isCharacterPart(instance))
+		then
+			return nil, true
+		end
+	end
+
+	local fallbackOrigin = surfacePoint + normal * (WALL_OFFSET + 1.5)
+	local fallback = castTransition(fallbackOrigin, -normal * (WALL_OFFSET + 4))
+	if fallback then
+		if isLocalSurfaceContinuation(fallback, normal) then
+			return fallback, false
+		end
+		if hasMovement then
+			local candidateNormal = fallback.Normal.Unit
+			if candidateNormal:Dot(normal) < SURFACE_CHANGE_THRESHOLD
+				and math.abs(candidateNormal:Dot(direction)) > 0.08
+			then
+				return fallback, false
+			end
+		end
+	end
+
+	return nil, false
+end
+
+function enforceSurfaceClearance(position, normal)
+	normal = normal.Unit
+	local origin = position + normal * SURFACE_PROBE_OUTSET
+	local result = workspace:Raycast(
+		origin,
+		-normal * (SURFACE_PROBE_OUTSET + SURFACE_PROBE_DEPTH),
+		raycastParams
+	)
+
+	if not isLocalSurfaceContinuation(result, normal) then
+		return position
+	end
+
+	local distance = (position - result.Position):Dot(normal)
+	if distance < WALL_OFFSET then
+		return position + normal * (WALL_OFFSET - distance)
+	end
+
+	return position
 end
 
 function findConcaveSurface(surfacePoint, normal, moveDirection, triggerDistance)
@@ -3404,23 +3615,20 @@ function findConcaveSurface(surfacePoint, normal, moveDirection, triggerDistance
 	end
 
 	local direction = moveDirection.Unit
-	local concaveOffsets = {WALL_OFFSET + 1, WALL_OFFSET + 1.75, WALL_OFFSET + 2.75}
-	local concaveBacksteps = {0.25, 0.75, 1.5}
-
+	local concaveOffsets = {WALL_OFFSET + 0.9, WALL_OFFSET + 1.5, WALL_OFFSET + 2.3, WALL_OFFSET + 3.2}
+	local concaveBacksteps = {0.15, 0.45, 0.9, 1.5}
 	for index, normalOffset in concaveOffsets do
 		local backstep = concaveBacksteps[index]
 		local origin = surfacePoint + normal * normalOffset - direction * backstep
-		local distance = triggerDistance and triggerDistance + backstep or WALL_OFFSET * 2 + 4 + index
-		local result = cast(origin, direction * distance)
-
+		local distance = triggerDistance and triggerDistance + backstep + 0.8 or WALL_OFFSET * 2 + 5 + index
+		local result = castTransition(origin, direction * distance)
 		if result
 			and result.Normal.Unit:Dot(normal) < SURFACE_CHANGE_THRESHOLD
-			and result.Normal.Unit:Dot(direction) < -0.35
+			and result.Normal.Unit:Dot(direction) < -0.18
 		then
 			return result
 		end
 	end
-
 	return nil
 end
 
@@ -3430,21 +3638,44 @@ function findConvexSurface(surfacePoint, normal, moveDirection)
 	end
 
 	local direction = moveDirection.Unit
-	local convexDepths = {0.25, 0.75, 1.5, 2.75, 4}
+	local outwardOffsets = {WALL_OFFSET + 0.7, WALL_OFFSET + 1.15, WALL_OFFSET + 1.8, WALL_OFFSET + 2.6}
+	local aheadDistances = {0.65, 1.15, 1.8, 2.7, 3.8, 5.1}
 
-	for index, depth in convexDepths do
-		local origin = surfacePoint - normal * depth + direction * (WALL_OFFSET + 1.25 + depth * 0.5)
-		local result = cast(origin, -direction * (WALL_OFFSET * 2 + 4 + index + depth))
+	for _, outward in outwardOffsets do
+		for _, ahead in aheadDistances do
+			local origin = surfacePoint + normal * outward + direction * ahead
+			local result = castTransition(origin, -direction * (ahead + 5.5))
+			if result then
+				local candidateNormal = result.Normal.Unit
+				local normalDot = candidateNormal:Dot(normal)
+				local directionDot = candidateNormal:Dot(direction)
+				local advance = (result.Position - surfacePoint):Dot(direction)
+				local outwardDistance = (result.Position - surfacePoint):Dot(normal)
+				if normalDot < SURFACE_CHANGE_THRESHOLD
+					and directionDot > 0.12
+					and advance > -1.6
+					and advance < 6.5
+					and outwardDistance < outward + 1.5
+				then
+					return result
+				end
+			end
+		end
+	end
 
-		if result then
-			local advance = (result.Position - surfacePoint):Dot(direction)
-
-			if result.Normal.Unit:Dot(normal) < SURFACE_CHANGE_THRESHOLD
-				and result.Normal.Unit:Dot(direction) > 0.2
-				and advance > -3
-				and advance < 3.5
-			then
-				return result
+	local diagonal = normal + direction
+	if diagonal.Magnitude > 0.1 then
+		local diagonalUnit = diagonal.Unit
+		for _, ahead in aheadDistances do
+			local origin = surfacePoint + normal * (WALL_OFFSET + 1.6) + direction * ahead
+			local result = castTransition(origin, -diagonalUnit * (ahead + 5))
+			if result then
+				local candidateNormal = result.Normal.Unit
+				if candidateNormal:Dot(normal) < SURFACE_CHANGE_THRESHOLD
+					and candidateNormal:Dot(direction) > 0.08
+				then
+					return result
+				end
 			end
 		end
 	end
@@ -3452,25 +3683,41 @@ function findConvexSurface(surfacePoint, normal, moveDirection)
 	return nil
 end
 
-function findCornerSurface(surfacePoint, normal, moveDirection)
-	local concave = findConcaveSurface(surfacePoint, normal, moveDirection)
+function rotateSurfaceDirection(direction, normal, degrees)
+	if math.abs(degrees) < 0.001 then
+		return direction.Unit
+	end
+	return CFrame.fromAxisAngle(normal.Unit, math.rad(degrees)):VectorToWorldSpace(direction.Unit).Unit
+end
 
-	if concave then
-		return concave
+function findCornerSurface(surfacePoint, normal, moveDirection)
+	if moveDirection.Magnitude < 0.05 then
+		return nil
 	end
 
-	return findConvexSurface(surfacePoint, normal, moveDirection)
+	for _, angle in EDGE_FAN_ANGLES do
+		local direction = rotateSurfaceDirection(moveDirection, normal, angle)
+		local concave = findConcaveSurface(surfacePoint, normal, direction)
+		if concave then
+			return concave
+		end
+
+		local convex = findConvexSurface(surfacePoint, normal, direction)
+		if convex then
+			return convex
+		end
+	end
+
+	return nil
 end
 
 function getInputVector()
 	local x = (inputState.Right and 1 or 0) - (inputState.Left and 1 or 0)
 	local y = (inputState.Forward and 1 or 0) - (inputState.Backward and 1 or 0)
 	local vector = Vector2.new(x, y)
-
 	if vector.Magnitude > 1 then
 		vector = vector.Unit
 	end
-	
 	return vector
 end
 
@@ -3483,11 +3730,9 @@ inputByKey = {
 
 function onMoveAction(_, inputStateValue, inputObject)
 	local direction = inputByKey[inputObject.KeyCode]
-	
 	if direction then
 		inputState[direction] = inputStateValue == Enum.UserInputState.Begin or inputStateValue == Enum.UserInputState.Change
 	end
-
 	return Enum.ContextActionResult.Sink
 end
 
@@ -3580,7 +3825,7 @@ function stopAnimation2()
 	lastAnimationSpeed = -1
 end
 
-local function createConstraints()
+function createConstraints()
 	if attachment then
 		return
 	end
@@ -3763,6 +4008,9 @@ local function attach(result)
 	disableCharacterCollisions()
 	currentNormal = result.Normal.Unit
 	currentUp = up
+	lastCameraSurfaceUp = up
+	lastCameraSurfaceNormal = result.Normal.Unit
+	cameraReacquireAt = 0
 	currentOffset = WALL_OFFSET
 	setSurface(result, up)
 	lastSurfaceTime = os.clock()
@@ -3819,7 +4067,7 @@ local function onToggleAction(_, inputStateValue)
 	return Enum.ContextActionResult.Sink
 end
 
-local function onClimbJumpAction(_, inputStateValue)
+function onClimbJumpAction(_, inputStateValue)
 	if inputStateValue ~= Enum.UserInputState.Begin then
 		return attached and Enum.ContextActionResult.Sink or Enum.ContextActionResult.Pass
 	end
@@ -3831,7 +4079,6 @@ local function onClimbJumpAction(_, inputStateValue)
 	local frame = rootPart.CFrame
 	local backward = frame:VectorToWorldSpace(Vector3.zAxis).Unit
 	local upward = frame:VectorToWorldSpace(Vector3.yAxis).Unit
-
 	setMode(false)
 
 	rootPart.AssemblyLinearVelocity = (backward * CLIMB_JUMP_BACKWARD_SPEED
@@ -3845,13 +4092,14 @@ local function onClimbJumpAction(_, inputStateValue)
 	return Enum.ContextActionResult.Sink
 end
 
-local function setCameraRotationMode(enabled)
+function setCameraRotationMode(enabled)
 	if cameraRotationEnabled == enabled then
 		return
 	end
-
 	cameraRotationEnabled = enabled
-	cameraRotationOffset = 0
+	lastCameraSurfaceUp = currentUp
+	lastCameraSurfaceNormal = currentNormal
+	cameraReacquireAt = 0
 	character:SetAttribute("CameraClimbRotationEnabled", enabled)
 
 	if not attached then
@@ -3868,7 +4116,7 @@ local function setCameraRotationMode(enabled)
 	end
 end
 
-local function onCameraToggleAction(_, inputStateValue)
+function onCameraToggleAction(_, inputStateValue)
 	if inputStateValue ~= Enum.UserInputState.Begin then
 		return Enum.ContextActionResult.Sink
 	end
@@ -3882,28 +4130,31 @@ local function onCameraToggleAction(_, inputStateValue)
 	return Enum.ContextActionResult.Sink
 end
 
-local function cubicBezier(point0, point1, point2, point3, alpha)
+function cubicBezier(point0, point1, point2, point3, alpha)
 	local a = point0:Lerp(point1, alpha)
 	local b = point1:Lerp(point2, alpha)
 	local c = point2:Lerp(point3, alpha)
 	return a:Lerp(b, alpha):Lerp(b:Lerp(c, alpha), alpha)
 end
 
-local function beginCornerTransition(result, input, oldSurfaceNormal)
+function beginCornerTransition(result, input, oldSurfaceNormal)
 	local startNormal = currentNormal
 	local startUp = currentUp
 	local startRight = startUp:Cross(startNormal).Unit
 	local moveDirection = startRight * input.X + startUp * input.Y
+
+	if moveDirection.Magnitude < 0.05 then
+		moveDirection = projectOntoPlane(result.Position - targetSurfacePoint, startNormal)
+	end
+
+	if moveDirection.Magnitude < 0.05 then
+		moveDirection = startUp
+	end
+
 	local newSurfaceNormal = result.Normal.Unit
 	local isConcave = moveDirection.Magnitude > 0.05 and newSurfaceNormal:Dot(moveDirection.Unit) < -0.45
 	local newSurfaceUp = transportSurfaceUp(startNormal, newSurfaceNormal, startUp)
 
-	if cameraRotationEnabled then
-		local cameraUp = getCameraSurfaceUp(newSurfaceNormal)
-		if cameraUp then
-			cameraRotationOffset = getSignedSurfaceAngle(cameraUp, newSurfaceUp, newSurfaceNormal)
-		end
-	end
 
 	local oldSurfacePoint = targetSurfacePoint
 	local correctionLimit = CORNER_OFFSET + 1.5
@@ -3922,14 +4173,23 @@ local function beginCornerTransition(result, input, oldSurfaceNormal)
 	if isConcave then
 		landingPoint = edgePoint + oldSurfaceNormal * CORNER_LANDING_DISTANCE
 	else
-		landingPoint = result.Position - oldSurfaceNormal * CONVEX_LANDING_DISTANCE
+		local landingDistance = CONVEX_LANDING_DISTANCE
+
+		if result.Instance:IsA("BasePart") then
+			local availableSpan = projectedSpan(result.Instance, oldSurfaceNormal)
+			landingDistance = math.min(landingDistance, math.max(0.22, availableSpan * 0.32))
+		end
+
+		landingPoint = result.Position - oldSurfaceNormal * landingDistance
 	end
 
 	landingPoint -= newSurfaceNormal * (landingPoint - result.Position):Dot(newSurfaceNormal)
 
 	transitionStartFrame = CFrame.fromMatrix(Vector3.zero, startRight, startUp, startNormal)
 	transitionStartPosition = alignPosition.Position
+
 	setSurface(result, newSurfaceUp, landingPoint)
+
 	local endRight = surfaceUp:Cross(surfaceNormal).Unit
 	transitionEndFrame = CFrame.fromMatrix(Vector3.zero, endRight, surfaceUp, surfaceNormal)
 	transitionEndPosition = targetSurfacePoint + surfaceNormal * WALL_OFFSET
@@ -3937,22 +4197,28 @@ local function beginCornerTransition(result, input, oldSurfaceNormal)
 	local clearancePoint
 
 	if isConcave then
-		clearancePoint = edgePoint + startNormal * CORNER_OFFSET + newSurfaceNormal * CORNER_OFFSET
+		clearancePoint = edgePoint + startNormal * (CORNER_OFFSET + WALL_OFFSET) + newSurfaceNormal * (CORNER_OFFSET + WALL_OFFSET)
 	else
 		local cornerDirection = startNormal + newSurfaceNormal
 		if cornerDirection.Magnitude < 0.1 then
+			cornerDirection = startNormal + moveDirection.Unit
+		end
+		if cornerDirection.Magnitude < 0.1 then
 			cornerDirection = startNormal
 		end
-		clearancePoint = edgePoint + cornerDirection.Unit * CORNER_OFFSET
+		clearancePoint = edgePoint + cornerDirection.Unit * (CORNER_OFFSET + WALL_OFFSET + 0.5)
 	end
 
 	transitionControlPosition1 = transitionStartPosition:Lerp(clearancePoint, 0.72)
 	transitionControlPosition2 = transitionEndPosition:Lerp(clearancePoint, 0.72)
 	transitionProgress = 0
+	transitionFromNormal = oldSurfaceNormal.Unit
+	transitionToNormal = newSurfaceNormal
+	cameraReacquireAt = math.huge
 	transitioning = true
 end
 
-local function updateCornerTransition(deltaTime)
+function updateCornerTransition(deltaTime)
 	if currentSurfacePart and not currentSurfacePart.Parent then
 		detach()
 		return
@@ -3981,15 +4247,19 @@ local function updateCornerTransition(deltaTime)
 		currentNormal = surfaceNormal
 		currentUp = surfaceUp
 		currentOffset = WALL_OFFSET
+		lastCameraSurfaceUp = currentUp
+		lastCameraSurfaceNormal = currentNormal
+		cameraReacquireAt = os.clock() + CAMERA_TRANSITION_HOLD
+		surfaceSwitchLockUntil = os.clock() + SURFACE_SWITCH_LOCK
+
 		local endRight = currentUp:Cross(currentNormal).Unit
-		alignPosition.Position = transitionEndPosition
-		alignOrientation.CFrame = CFrame.fromMatrix(Vector3.zero, endRight, currentUp, currentNormal) * CFrame.Angles(math.rad(90), 0, 0) --alignOrientation.CFrame = CFrame.fromMatrix(Vector3.zero, endRight, currentUp, currentNormal)
+		alignPosition.Position = enforceSurfaceClearance(transitionEndPosition, currentNormal)
+		alignOrientation.CFrame = CFrame.fromMatrix(Vector3.zero, endRight, currentUp, currentNormal)
 	end
 end
 
-local function updateAttached(deltaTime)
+function updateAttached(deltaTime)
 	maintainCharacterCollisions()
-
 	if transitioning then
 		updateCornerTransition(deltaTime)
 		return
@@ -3998,12 +4268,10 @@ local function updateAttached(deltaTime)
 	refreshMovingSurface()
 
 	local projectedCurrentUp = projectOntoPlane(currentUp, currentNormal)
-
 	if projectedCurrentUp.Magnitude < 0.1 then
 		local _, fallbackUp = getSurfaceBasis(currentNormal, surfaceUp)
 		projectedCurrentUp = fallbackUp
 	end
-
 	currentUp = projectedCurrentUp.Unit
 	local right = currentUp:Cross(currentNormal).Unit
 
@@ -4012,13 +4280,10 @@ local function updateAttached(deltaTime)
 	local intendedSurfacePoint = targetSurfacePoint + moveDirection * CLIMB_SPEED * deltaTime
 	local rootSurfacePoint = rootPart.Position - currentNormal * currentOffset
 	local targetLead = projectOntoPlane(intendedSurfacePoint - rootSurfacePoint, currentNormal)
-
 	if targetLead.Magnitude > MAX_TARGET_LEAD then
 		intendedSurfacePoint -= targetLead - targetLead.Unit * MAX_TARGET_LEAD
 	end
-
-	local result = findCurrentSurface(intendedSurfacePoint, surfaceNormal)
-
+	local result, blockedByLocalGeometry = findCurrentSurface(intendedSurfacePoint, surfaceNormal, moveDirection)
 	if result and moveDirection.Magnitude > 0.05 then
 		cornerDetectionAccumulator += deltaTime
 		if cornerDetectionAccumulator >= DETECTION_INTERVAL then
@@ -4042,56 +4307,79 @@ local function updateAttached(deltaTime)
 	end
 
 	if not result then
-		if os.clock() - lastSurfaceTime > LOST_SURFACE_GRACE then
-			detach()
+		local now = os.clock()
+		if blockedByLocalGeometry then
+			lastSurfaceTime = now
+			setAnimationSpeed(0)
+			return
 		end
-		setAnimationSpeed(input.Magnitude > 0.05 and 0.65 or 0)
+
+		local grace = input.Magnitude > 0.05 and EDGE_RECOVERY_GRACE or LOST_SURFACE_GRACE
+		if now - lastSurfaceTime > grace then
+			detach()
+			return
+		end
+
+		local heldUp = projectOntoPlane(currentUp, currentNormal)
+		if heldUp.Magnitude < 0.1 then
+			local _, fallbackUp = getSurfaceBasis(currentNormal, surfaceUp)
+			heldUp = fallbackUp
+		end
+		local heldRight = heldUp.Unit:Cross(currentNormal).Unit
+		alignPosition.Position = enforceSurfaceClearance(
+			targetSurfacePoint + currentNormal * currentOffset,
+			currentNormal
+		)
+		alignOrientation.CFrame = CFrame.fromMatrix(Vector3.zero, heldRight, heldUp.Unit, currentNormal)
+		rootPart.AssemblyAngularVelocity = Vector3.zero
+		setAnimationSpeed(input.Magnitude > 0.05 and 0.55 or 0)
 		return
 	end
 
 	lastSurfaceTime = os.clock()
-
 	local oldSurfaceNormal = surfaceNormal
 	local newSurfaceNormal = result.Normal.Unit
 
 	if newSurfaceNormal:Dot(oldSurfaceNormal) < SURFACE_CHANGE_THRESHOLD then
+		if os.clock() < surfaceSwitchLockUntil
+			and transitionFromNormal
+			and newSurfaceNormal:Dot(transitionFromNormal) > 0.9
+		then
+			lastSurfaceTime = os.clock()
+			setAnimationSpeed(input.Magnitude > 0.05 and 0.55 or 0)
+			return
+		end
+
 		beginCornerTransition(result, input, oldSurfaceNormal)
 		updateCornerTransition(deltaTime)
 		return
 	end
 
 	local transportedUp = projectOntoPlane(surfaceUp, newSurfaceNormal)
-
 	if transportedUp.Magnitude < 0.1 then
 		local _, fallbackUp = getSurfaceBasis(newSurfaceNormal, currentUp)
 		transportedUp = fallbackUp
 	end
-
 	local desiredSurfaceUp = transportedUp.Unit
-
-	if cameraRotationEnabled then
+	if cameraRotationEnabled and os.clock() >= cameraReacquireAt then
 		local cameraUp = getCameraDesiredUp(newSurfaceNormal)
 		if cameraUp then
 			desiredSurfaceUp = cameraUp
 		end
 	end
-
 	setSurface(result, desiredSurfaceUp)
 
 	local alpha = math.clamp(deltaTime * NORMAL_RESPONSE, 0, 1)
 	local blendedNormal = currentNormal:Lerp(surfaceNormal, alpha)
-
 	if blendedNormal.Magnitude > 0.1 then
 		currentNormal = blendedNormal.Unit
 	end
 
 	local desiredCurrentUp = projectOntoPlane(surfaceUp, currentNormal)
-
 	if desiredCurrentUp.Magnitude < 0.1 then
 		local _, fallbackUp = getSurfaceBasis(currentNormal, currentUp)
 		desiredCurrentUp = fallbackUp
 	end
-
 	if cameraRotationEnabled then
 		currentUp = rotateUpToward(
 			currentUp,
@@ -4108,11 +4396,15 @@ local function updateAttached(deltaTime)
 		end
 		currentUp = blendedUp.Unit
 	end
-
 	right = currentUp:Cross(currentNormal).Unit
 
-	alignPosition.Position = targetSurfacePoint + currentNormal * currentOffset
-	alignOrientation.CFrame = CFrame.fromMatrix(Vector3.zero, right, currentUp, currentNormal) * CFrame.Angles(math.rad(90), 0, 0) -- alignOrientation.CFrame = CFrame.fromMatrix(Vector3.zero, right, currentUp, currentNormal)
+	alignPosition.MaxVelocity = CLIMB_SPEED * 2.8
+	alignPosition.Responsiveness = POSITION_RESPONSE
+	alignOrientation.Responsiveness = ORIENTATION_RESPONSE
+	local desiredRootPosition = targetSurfacePoint + currentNormal * currentOffset
+	desiredRootPosition = enforceSurfaceClearance(desiredRootPosition, currentNormal)
+	alignPosition.Position = desiredRootPosition
+	alignOrientation.CFrame = CFrame.fromMatrix(Vector3.zero, right, currentUp, currentNormal) * CFrame.Angles(math.rad(90), 0, 0)
 	rootPart.AssemblyAngularVelocity = Vector3.zero
 
 	if input.Magnitude > 0.05 then
@@ -4122,14 +4414,19 @@ local function updateAttached(deltaTime)
 	end
 end
 
-local function updateDetached(deltaTime)
+function updateDetached(deltaTime)
 	setAnimationSpeed(humanoid.MoveDirection.Magnitude > 0.05 and 0.7 or 0.25)
+	
 	detectionAccumulator += deltaTime
+
 	if detectionAccumulator < DETECTION_INTERVAL then
 		return
 	end
+
 	detectionAccumulator %= DETECTION_INTERVAL
+
 	local wall = findWallAhead()
+
 	if wall then
 		attach(wall)
 	end
@@ -4173,6 +4470,7 @@ RunService.Heartbeat:Connect(function(deltaTime)
 	if destroyed or not modeEnabled or humanoid.Health <= 0 then
 		return
 	end
+
 	if attached then
 		updateAttached(math.min(deltaTime, 1 / 20))
 	else
