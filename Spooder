@@ -629,6 +629,8 @@ function jumpToAbove(num)
 			above = true
             rootPart.CFrame = CFrame.new(targetPos) * (rootPart.CFrame - rootPart.CFrame.Position)
 
+			task.wait()
+
 			local AnimTrack
 
 			if num == 2 then
@@ -639,10 +641,18 @@ function jumpToAbove(num)
 
             AnimTrack:Play()
 
-			local weld = Instance.new("WeldConstraint")
+			rootPart.AssemblyLinearVelocity = Vector3.zero
+    		rootPart.AssemblyAngularVelocity = Vector3.zero
+
+			rootPart.CFrame = CFrame.new(targetPos) * (rootPart.CFrame - rootPart.CFrame.Position)
+
+			local weld = Instance.new("WeldConstraint", rootPart)
 			weld.Part0 = rootPart
+			rootPart.CFrame = CFrame.new(targetPos) * (rootPart.CFrame - rootPart.CFrame.Position)
 			weld.Part1 = hitPart
-			weld.Parent = rootPart
+
+			rootPart.AssemblyLinearVelocity = Vector3.zero
+    		rootPart.AssemblyAngularVelocity = Vector3.zero
 
 			repeat task.wait() until character == nil or game:GetService('UserInputService'):IsKeyDown(Enum.KeyCode.Space)
 
@@ -3078,7 +3088,7 @@ EDGE_FAN_ANGLES = {0, 18, -18, 36, -36, 54, -54}
 SURFACE_PROBE_OUTSET = 5
 SURFACE_PROBE_DEPTH = 8
 SURFACE_CONTINUATION_DOT = 0.72
-CAMERA_TRANSITION_HOLD = 0.18
+CAMERA_TRANSITION_HOLD = 0.46
 SURFACE_SWITCH_LOCK = 0.2
 NORMAL_RESPONSE = 16
 CAMERA_ROTATION_SPEED = 9
@@ -3312,7 +3322,6 @@ function getCameraSurfaceUp(normal)
 		end
 		return nil
 	end
-
 
 	lastCameraSurfaceUp = candidate
 	lastCameraSurfaceNormal = normal
