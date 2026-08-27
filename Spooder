@@ -692,28 +692,6 @@ game:GetService('UserInputService').InputBegan:Connect(function(Input, IsTyping)
 
 	if Input.KeyCode == Enum.KeyCode.Z and game:GetService('UserInputService'):IsKeyDown(Enum.KeyCode.S) --[[and game:GetService('UserInputService'):IsKeyDown(Enum.KeyCode.LeftControl)]] then
 		AnimCD = true
-		local AnimTrack = playAirTrickAnim('rbxassetid://76842517659641', 1.65, .6)
-        local repeating = true
-
-        task.spawn(function()
-            while repeating == true do
-                if character:GetAttribute("IsWebSwinging") == true or character:GetAttribute("IsWebZipping") == true or character:GetAttribute("ClimbModeEnabled") == true or character:FindFirstChild('Humanoid'):GetState() ~= Enum.HumanoidStateType.Freefall then
-                    AnimTrack:Stop()
-                    return
-                end
-                task.wait()
-            end
-            return
-        end)
-
-		task.delay(.55, function()
-			AnimTrack:Stop(.21)
-			task.wait(.21)
-            AnimCD = false
-            AnimTrack:Destroy()
-		end)
-	elseif Input.KeyCode == Enum.KeyCode.X and game:GetService('UserInputService'):IsKeyDown(Enum.KeyCode.S) --[[and game:GetService('UserInputService'):IsKeyDown(Enum.KeyCode.LeftControl)]] then
-		AnimCD = true
 		local AnimTrack = playAirTrickAnim('rbxassetid://122723420065601', 1.35, 1)
         local repeating = true
 
@@ -730,6 +708,28 @@ game:GetService('UserInputService').InputBegan:Connect(function(Input, IsTyping)
 
 		task.delay(.65, function()
             repeating = false
+			AnimTrack:Stop(.21)
+			task.wait(.21)
+            AnimCD = false
+            AnimTrack:Destroy()
+		end)
+	elseif Input.KeyCode == Enum.KeyCode.X and game:GetService('UserInputService'):IsKeyDown(Enum.KeyCode.S) --[[and game:GetService('UserInputService'):IsKeyDown(Enum.KeyCode.LeftControl)]] then
+		AnimCD = true
+		local AnimTrack = playAirTrickAnim('rbxassetid://76842517659641', 1.65, .6)
+        local repeating = true
+
+        task.spawn(function()
+            while repeating == true do
+                if character:GetAttribute("IsWebSwinging") == true or character:GetAttribute("IsWebZipping") == true or character:GetAttribute("ClimbModeEnabled") == true or character:FindFirstChild('Humanoid'):GetState() ~= Enum.HumanoidStateType.Freefall then
+                    AnimTrack:Stop()
+                    return
+                end
+                task.wait()
+            end
+            return
+        end)
+
+		task.delay(.55, function()
 			AnimTrack:Stop(.21)
 			task.wait(.21)
             AnimCD = false
