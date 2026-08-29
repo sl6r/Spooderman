@@ -3080,7 +3080,7 @@ CAMERA_TOGGLE_KEY = Enum.KeyCode.V
 DETECTION_DISTANCE = 5
 FLOOR_DETECTION_DISTANCE = 6
 DETECTION_INTERVAL = 1 / 30
-WALL_OFFSET = 2.5
+WALL_OFFSET = 2.75
 CORNER_OFFSET = 3
 CORNER_LANDING_DISTANCE = 1.6
 CONVEX_LANDING_DISTANCE = 3
@@ -3451,23 +3451,34 @@ end
 
 function cast(origin, direction)
 	local result = workspace:Raycast(origin, direction, raycastParams)
+
 	if isClimbable(result) then
 		return result
 	end
-	if not result or blocksClimbRay(result.Instance) then
+
+	--[[if not result or blocksClimbRay(result.Instance) then
 		return nil
-	end
+	end]]
 
 	local ignored = {character, result.Instance}
+
 	for _ = 1, 4 do
 		piercingRaycastParams.FilterDescendantsInstances = ignored
 		result = workspace:Raycast(origin, direction, piercingRaycastParams)
+
 		if isClimbable(result) then
 			return result
 		end
-		if not result or blocksClimbRay(result.Instance) then
+
+		--[[if not result or blocksClimbRay(result.Instance) then
 			return nil
+		end]]
+
+		if blocksClimbRay(result.Instance) then
+			table.insert(ignored, result.Instance)
+			continue
 		end
+
 		table.insert(ignored, result.Instance)
 	end
 	return nil
@@ -3553,6 +3564,110 @@ function isLocalSurfaceContinuation(result, normal)
 
 	return result.Normal.Unit:Dot(normal.Unit) >= SURFACE_CONTINUATION_DOT
 end
+
+--[[function findCurrentSurface(surfacePoint, normal, moveDirection)
+	normal = normal.Unit
+	local hasMovement = moveDirection and moveDirection.Magnitude > 0.05
+	local direction = hasMovement and moveDirection.Unit or nil
+
+	local origin = surfacePoint + normal * SURFACE_PROBE_OUTSET
+	local rayDirection = -normal * (SURFACE_PROBE_OUTSET + SURFACE_PROBE_DEPTH)
+
+	-- First try the normal ray.
+	local rawResult = workspace:Raycast(
+		origin,
+		rayDirection,
+		raycastParams
+	)
+
+	-- If we hit something marked NoClimb, pierce it and
+	-- keep searching for the actual climbable surface behind it.
+	if rawResult and blocksClimbRay(rawResult.Instance) then
+		local ignored = {character}
+
+		-- Ignore every NoClimb part we encounter.
+		for _ = 1, 8 do
+			piercingRaycastParams.FilterDescendantsInstances = ignored
+
+			local nextResult = workspace:Raycast(
+				origin,
+				rayDirection,
+				piercingRaycastParams
+			)
+
+			if not nextResult then
+				rawResult = nil
+				break
+			end
+
+			if isClimbable(nextResult) then
+				rawResult = nextResult
+				break
+			end
+
+			if blocksClimbRay(nextResult.Instance) then
+				table.insert(ignored, nextResult.Instance)
+				continue
+			end
+
+			rawResult = nextResult
+			break
+		end
+	end
+
+	if rawResult then
+		if isLocalSurfaceContinuation(rawResult, normal) then
+			return rawResult, false
+		end
+
+		if isTransitionSurface(rawResult) and hasMovement then
+			local candidateNormal = rawResult.Normal.Unit
+
+			if candidateNormal:Dot(normal) < SURFACE_CHANGE_THRESHOLD
+				and math.abs(candidateNormal:Dot(direction)) > 0.08
+			then
+				return rawResult, false
+			end
+		end
+
+		local instance = rawResult.Instance
+
+		if blocksClimbRay(instance) then
+			return nil, false
+		end
+
+		if instance == workspace.Terrain
+			or (instance:IsA("BasePart") and instance.CanCollide and not isCharacterPart(instance))
+		then
+			return nil, true
+		end
+	end
+
+	local fallbackOrigin = surfacePoint + normal * (WALL_OFFSET + 1.5)
+
+	local fallback = castTransition(
+		fallbackOrigin,
+		-normal * (WALL_OFFSET + 4)
+	)
+
+	if fallback then
+		if isLocalSurfaceContinuation(fallback, normal) then
+			return fallback, false
+		end
+
+		if hasMovement then
+			local candidateNormal = fallback.Normal.Unit
+
+			if candidateNormal:Dot(normal) < SURFACE_CHANGE_THRESHOLD
+				and math.abs(candidateNormal:Dot(direction)) > 0.08
+			then
+				return fallback, false
+			end
+		end
+	end
+
+	return nil, false
+end]]
 
 function findCurrentSurface(surfacePoint, normal, moveDirection)
 	normal = normal.Unit
@@ -3856,7 +3971,7 @@ function createConstraints()
 	alignPosition.Name = "SpiderClimbPosition"
 	alignPosition.Mode = Enum.PositionAlignmentMode.OneAttachment
 	alignPosition.Attachment0 = attachment
-	alignPosition.ApplyAtCenterOfMass = true
+	alignPosition.ApplyAtCenterOfMass = false -- true
 	alignPosition.MaxForce = 500000
 	alignPosition.MaxVelocity = CLIMB_SPEED * 2.5
 	alignPosition.Responsiveness = POSITION_RESPONSE
@@ -3900,7 +4015,7 @@ end
 
 local function maintainCharacterCollisions()
 	for part in savedPartCollisions do
-		if part.Parent and part.CanCollide then
+		if part.Parent and part.CanCollide and part.Name ~= 'Handle' then
 			part.CanCollide = false
 		end
 	end
@@ -3913,7 +4028,7 @@ local function restoreCharacterCollisions()
 	end
 
 	for part, canCollide in savedPartCollisions do
-		if part.Parent then
+		if part.Parent and part.Name ~= 'Handle' then
 			part.CanCollide = canCollide
 		end
 	end
@@ -4505,6 +4620,34 @@ character.Destroying:Connect(function()
 	--ContextActionService:UnbindAction(JUMP_ACTION)
 	--ContextActionService:UnbindAction(MOVE_ACTION)
 end)
+
+-- come back
+
+local Sizes = {
+	Vector3.new(170.0369873046875, 19, 1.1660000085830688),
+	Vector3.new(461.552001953125, 19, 1.0090000629425049),
+	Vector3.new(164.36895751953125, 19, 1.0090000629425049),
+	Vector3.new(6.396026611328125, 10.5, 370.51104736328125),
+	Vector3.new(161.48794555664062, 19, 1.0090000629425049),
+	Vector3.new(144.71499633789062, 19, 1.0090000629425049),
+	Vector3.new(201.49200439453125, 19, 1),
+	Vector3.new(97.20100402832031, 19, 1),
+	Vector3.new(256.8900146484375, 10.5, 7.1160430908203125),
+	Vector3.new(229.61500549316406, 19, 1.1660000085830688),
+	Vector3.new(265.1319580078125, 19, 1),
+	Vector3.new(1, 19.25, 247.3000030517578),
+	Vector3.new(204.62600708007812, 19.25, 1),
+	Vector3.new(6.9990081787109375, 19, 167.1719970703125),
+	Vector3.new(231.64901733398438, 19.547000885009766, 1),
+}
+
+if workspace:FindFirstChild('FFA_MAP') then
+	for i,v in next, workspace.FFA_MAP.Map:GetChildren() do
+		if v.Name == 'Part' and table.find(Sizes, v.Size) then
+			--CollectionService:AddTag(v, 'NoClimb')
+		end
+	end
+end
 
 game:GetService('RunService').RenderStepped:Connect(function()
     character.Humanoid.WalkSpeed = 34
